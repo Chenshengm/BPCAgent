@@ -9,8 +9,11 @@ class LLMException(BasicException):
     pass
 
 class AgentException(BasicException):
-    """Agent相关异常"""
-    pass
+    """Agent 异常；code 标识可转换为运行结果的已知失败。"""
+
+    def __init__(self, message: str, *, code: str | None = None):
+        super().__init__(message)
+        self.code = code
 
 class ConfigException(BasicException):
     """配置相关异常"""

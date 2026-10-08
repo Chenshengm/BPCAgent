@@ -1,6 +1,6 @@
 # BPCAgent 技术报告
 
-**日期：2026-10-01｜对象：当前工作区源码｜包版本：0.1.0**
+**日期：2026-10-08｜对象：当前工作区源码｜包版本：0.1.0**
 
 ## 摘要
 
@@ -8,7 +8,7 @@ BPCAgent 已实现一个同步 Agent 开发框架：统一解析配置，通过 
 
 核心职责分为三层：**模型客户端负责请求与响应转换，Agent 负责运行循环，工具注册表负责校验与执行。** 两类 Agent 使用同一工具循环，主要差异是提示策略和历史使用方式。目前尚未实现多智能体调度、Workflow 编排、异步工具循环和独立工具总次数预算。
 
-本报告依据当前工作区文件编写，包含尚未提交的修改；不以历史改进计划代替实际实现。编写时重新运行了 57 项离线测试，全部通过。真实服务验证引用此前已记录的结果，本次未重新请求模型。图示使用 Mermaid，可在支持 Mermaid 的 Markdown 阅读器中查看。
+本报告依据当前工作区文件编写，包含尚未提交的修改；不以历史改进计划代替实际实现。本次结果接口验证运行了 65 项离线测试，全部通过。真实服务验证引用此前已记录的结果，本次未重新请求模型。图示使用 Mermaid，可在支持 Mermaid 的 Markdown 阅读器中查看。
 
 ### 阅读顺序
 
@@ -34,6 +34,7 @@ BPCAgent/
 │   │   ├── messages.py             # 消息、工具请求、模型响应
 │   │   ├── models.py               # 模型客户端
 │   │   ├── agents.py               # Agent 策略与执行循环
+│   │   ├── result.py               # AgentResult 运行产物与记录
 │   │   └── exceptions.py           # 框架异常类型
 │   └── tools/
 │       ├── __init__.py             # 工具相关接口导出
@@ -64,6 +65,8 @@ flowchart TD
     T --> K["calculator.py：具体计算"]
     K --> T
     T -->|ToolResult| A
+    A --> Result["result.py：AgentResult"]
+    Result --> Entry
     D["messages.py：消息与调用结构"] -.-> A
     D -.-> M
     E["exceptions.py：异常类型"] -.-> A
@@ -93,7 +96,7 @@ flowchart LR
     U --> TP["tools/__init__.py"]
     Root --> AP
     Root --> TP
-    AP --> AC["Agent / BasicAgent / ReActAgent"]
+    AP --> AC["Agent / BasicAgent / ReActAgent / AgentResult"]
     AP --> AM["Config / MyLLM / 消息类型 / 异常"]
     TP --> TC["Tool / FunctionTool / ToolRegistry / 结果类型"]
     TP --> CC["CalculatorArgs / CalculatorTool"]
@@ -252,35 +255,40 @@ flowchart TD
     R2 --> R3["加入当前问题；使用构造时 max_steps"]
     B3 --> Loop["Agent._run_with_tools"]
     R3 --> Loop
-    Loop --> Out["最终答案字符串或异常"]
+    Loop --> Out["AgentResult；配置或未识别错误仍抛出"]
 ```
 
-**图 7：共享运行循环。**
+**图 7：共享运行循环 `_run_tool_loop` 与外层结果包装。**
 
 ```mermaid
 flowchart TD
     A["检查入口参数；从注册表取得工具定义"] --> B{"还有模型交互轮次？"}
     B -->|否| Limit["step_limit_exceeded"]
+    Limit --> Fail["包装 finished=false 的 AgentResult，不写成功历史"]
     B -->|是| C["调用 MyLLM.invoke"]
-    C --> D["检查 LLMResponse 与结束原因"]
+    C -->|LLMException| Fail
+    C --> Save["检查响应类型；保存已收到的 assistant 消息"]
+    Save --> D["检查结束原因"]
+    Save -->|类型不符| Err
     D -->|不合法| Err["抛出异常，不写本次成功历史"]
+    Err --> Fail
     D --> E{"存在 tool_calls？"}
     E -->|否| F{"有效文本且 finish_reason 为 stop？"}
     F -->|否| Err
-    F -->|是| G["追加最终消息；保存问题与答案"]
-    G --> H["返回字符串"]
+    F -->|是| G["保存问题与最终答案到会话历史"]
+    G --> H["包装 finished=true 的 AgentResult"]
     E -->|是| I{"当前已启用非空工具列表？"}
     I -->|否| Err
-    I -->|是| J["构造并追加 assistant 调用消息"]
-    J --> K["顺序执行每个调用，追加配对 tool 消息"]
+    I -->|是| K["顺序执行每个调用，追加配对 tool 消息"]
     K --> B
 ```
 
 主要方法：
 
-- `_invoke_response()`：要求返回 `LLMResponse`；仅接受 `stop/tool_calls` 结束原因。有调用时允许空文本；没有调用时必须是非空文本且正常结束。
+- `_invoke_response()`：要求返回 `LLMResponse`，先保存 assistant 消息再检查结束状态，以保留截断或空响应。仅接受 `stop/tool_calls` 结束原因；有调用时允许空文本，没有调用时必须是非空文本且正常结束。
 - `_execute_tool_call()`：先解码完整 JSON 对象，再把名称、参数和原调用 ID 交给注册表。无效 JSON、重复键、非有限数值和多余尾部内容转为 `invalid_arguments`。
-- `_run_with_tools()`：每轮调用模型一次；一次回复中的多个工具按顺序执行，全部结果加入消息后再请求模型。
+- `_run_tool_loop()`：每轮调用模型一次；一次回复中的多个工具按顺序执行，全部结果加入消息后再请求模型。
+- `_run_with_tools()`：调用原循环，将成功文本或已知失败包装成 `AgentResult`，深复制 messages；配置错误及未识别异常继续向外抛出。
 - `add_message()/get_history()/clear_history()`：管理长期会话历史；`get_history()` 返回列表浅拷贝，内部 Message 对象未深复制。
 - BasicAgent 的 `add_tool()/remove_tool()/list_tools()`：委托注册表管理工具。`has_tools()` 检查开关及注册表是否存在，不保证注册表内有工具。
 
@@ -392,7 +400,7 @@ flowchart TD
 
 源码：[exceptions.py](src/bpcagent/agents/exceptions.py)。
 
-`BasicException` 是共同基类；`ConfigException`、`LLMException`、`AgentException`、`ToolException` 均为其子类。目前这些类没有专门的状态码字段。
+`BasicException` 是共同基类；`ConfigException`、`LLMException`、`AgentException`、`ToolException` 均为其子类。`AgentException.code` 可选，用于标记能转换为未完成结果的已知错误；未标记的异常继续抛出。
 
 **图 11：异常与工具错误结果的分流。**
 
@@ -400,18 +408,35 @@ flowchart TD
 flowchart TD
     C["配置合并或请求设置非法"] --> CE["ConfigException"]
     M["SDK 请求或响应转换失败"] --> LE["LLMException"]
-    A["空响应、异常结束或轮数耗尽"] --> AE["AgentException"]
+    A["空响应、异常结束或轮数耗尽"] --> AE["带 code 的 AgentException"]
     R["工具注册失败或调用 ID 非法"] --> TE["ToolException"]
     CE --> App["交给调用方处理"]
-    LE --> App
-    AE --> App
+    LE -->|Agent.run 内| Result["AgentResult：finished=false，info 保存原因"]
+    LE -->|直接调用模型或流式| App
+    AE --> Result
+    Unknown["未标识的 AgentException 或未包装的程序错误"] --> App
     TE --> App
     E["工具不存在、参数错误、执行异常或结果不合法"] --> TR["ToolResult.error"]
     TR --> Feedback["作为 tool 消息反馈给模型"]
     Feedback --> Next["下一轮纠错或回答；仍受轮数限制"]
 ```
 
-这里有两个错误通道：**异常终止程序入口，工具错误结果参与模型交互。** 工具执行阶段捕获的普通异常统一归为 `execution_error`，尚未区分可恢复与必须立即终止的失败。直接构造 Pydantic 对象等底层操作仍可能抛出原生异常，框架并未包装所有异常路径。
+非流式运行将已知模型与执行失败转换为 AgentResult；配置及未识别错误仍抛出异常，工具错误结果继续参与模型交互。工具执行阶段捕获的普通异常统一归为 `execution_error`，尚未区分可恢复与必须立即终止的失败。模型层已包装为 LLMException 的错误统一视为 model_error；框架并未包装所有异常路径。
+
+### 2.9 运行结果模块：`agents/result.py`
+
+源码：[result.py](src/bpcagent/agents/result.py)。`AgentResult` 是四字段 dataclass，无自定义校验或序列化方法。
+
+| 字段 | 当前用途 |
+| --- | --- |
+| `output` | 产物字典；成功为 `{"text": answer}`，已知失败为空 |
+| `transcript` | 本次完整消息的深复制快照，包括注入的上下文、工具调用与结果 |
+| `info` | 成功为空；已知失败包含 `stop_reason`、`error` |
+| `finished` | True 为正常完成，False 为已知未完成，None 为未跟踪；默认 None |
+
+运行循环 → 成功文本或已知失败 → 消息深复制 → AgentResult → 调用方。三个容器分别使用 default_factory，实例之间不共享默认对象。当前两类 Agent 明确返回 True/False；None 不代表失败，也不决定是否可训练。完成标记不判断答案正确性，评价与奖励留给未来 Task 层的 TaskResult。
+
+transcript 记录消息，不保留完整供应商响应、每轮请求参数或用量；不能转换为 LLMResponse 的响应不加入记录。可用 dataclasses.asdict 转成字典，自定义产物的 JSON 可序列化性由调用方负责。
 
 ## 3. 按运行阶段组织的模块交互
 
@@ -468,9 +493,9 @@ sequenceDiagram
     M->>S: Chat Completions 非流式请求
     S-->>M: 文本、调用列表、结束原因
     M-->>A: LLMResponse
-    A->>A: 检查结束原因与文本、调用关系
+    A->>A: 保存 assistant 消息，再检查结束原因与文本、调用关系
     alt 无调用且文本有效
-        A-->>U: 保存成功问答并返回字符串
+        A-->>U: 保存成功问答，返回 AgentResult
     else 有有效调用
         Note over A: 进入阶段 C
     end
@@ -505,7 +530,7 @@ sequenceDiagram
     M->>S: 再次请求
     S-->>M: 无调用，文本回答，正常结束
     M-->>A: LLMResponse
-    A->>A: 保存问题与最终答案
+    A->>A: 保存最终消息与成功问答；包装 AgentResult
 ```
 
 **同一调用的三个 ID 必须一致：**`ToolCall.id` → `ToolResult.call_id` → tool 消息的 `tool_call_id`。工具名只用于选择实现，不能代替调用 ID。
@@ -537,14 +562,16 @@ sequenceDiagram
 
 | 状态 | 执行结果 | 历史影响 |
 | --- | --- | --- |
-| 无调用、正常结束、有效文本 | `run()` 返回字符串 | 追加当前 user 和最终 assistant 至 `_history` |
+| 无调用、正常结束、有效文本 | `finished=True`，答案在 `output["text"]` | 追加当前 user 和最终 assistant 至 `_history` |
 | 有工具调用 | 顺序执行并回传结果 | 中间消息保存在本次运行消息列表 |
-| 空文本且没有调用 | 抛出 `AgentException` | 不追加本次成功问答 |
-| 截断、过滤或不接受的结束原因 | 终止执行 | 不追加本次成功问答 |
-| 轮数耗尽 | 抛出 `step_limit_exceeded` | 不追加本次成功问答；已执行工具不会回滚 |
+| 空文本且没有调用 | `finished=False`，原因 `empty_response` | 不追加成功问答，保留已接收消息 |
+| 截断、过滤或不接受的结束原因 | `finished=False`，原因 `invalid_response` | 不追加成功问答，保留已转换的响应 |
+| 模型请求或响应转换失败 | `finished=False`，原因 `model_error` | 不追加成功问答，保留此前消息 |
+| 轮数耗尽 | `finished=False`，原因 `step_limit_exceeded` | 不追加本次成功问答；已执行工具不会回滚 |
+| 配置或未识别错误 | 向外抛出异常 | 不承诺返回 AgentResult |
 | 工具自身失败 | 返回错误结果，允许继续下一轮 | 保留在本次消息中，等待模型处理 |
 
-`max_tool_iterations` 和 `max_steps` 都包含生成最终答案的那一轮。最后允许的一轮如果仍要求调用工具，当前代码会执行这些工具、追加结果，然后因没有下一轮而抛出异常；不会额外请求一次模型来总结。
+`max_tool_iterations` 和 `max_steps` 都包含生成最终答案的那一轮。最后允许的一轮如果仍要求调用工具，当前代码会执行这些工具、追加结果，然后返回未完成的结果；不会额外请求一次模型来总结。已知失败的 output 为空，info 提供停止原因与错误描述，transcript 保留消息快照。
 
 ### 3.5 文本流式分支
 
@@ -592,9 +619,9 @@ flowchart TD
     R --> Results["展示 Schema、成功或错误结果"]
 ```
 
-- 离线问答模拟模型，但工具执行是真实 Python 调用。
+- 离线问答模拟模型，但工具执行是真实 Python 调用；示例从 AgentResult 读取答案，未完成时输出错误并返回非零退出码。
 - 普通 live 示例使用模型默认工具选择；答对数值但没有执行计算器，不算工具验证通过。
-- `protocol-test` 是独立的两请求协议检查，不运行 Agent 的多轮循环；其参数使用普通 `json.loads()`，不代表 Agent 严格 JSON 解码器的全部校验能力。该分支也不写入 Agent 会话历史。
+- `protocol-test` 是独立的两请求协议检查，直接返回文本，不运行 Agent 的多轮循环；其参数使用普通 `json.loads()`，不代表 Agent 严格 JSON 解码器的全部校验能力。该分支也不写入 Agent 会话历史。
 - `tool_execution.py` 展示对象工具、函数工具、嵌套参数和默认值，不请求模型。
 
 ## 4. 接口与运行边界汇总
@@ -610,15 +637,16 @@ flowchart TD
 | 注册表 → 工具 | 已校验的参数模型实例 | 具体工具执行任务 |
 | 工具 → 注册表 | 原生结果或异常 | ToolResult 校验返回数据并包装错误 |
 | Agent → 模型反馈 | assistant 调用消息 + 配对 tool 消息 | 共享循环负责顺序和 ID 对应 |
-| Agent → 调用方 | 最终答案字符串或异常 | 调用方决定展示及后续任务 |
+| Agent → 调用方 | AgentResult；配置及未识别错误仍抛出 | 调用方读取产物、消息和完成状态 |
 
 ### 4.2 两种历史的区别
 
 | 对象 | 内容 | 生命周期及用途 |
 | --- | --- | --- |
 | `Agent._history` | 默认由框架保存的成功问答对 | 跨 `run()` 保留；BasicAgent 注入后续请求；可手动清空 |
-| BasicAgent 本次 `messages` | 系统、旧问答、当前问题、调用、结果、最终答案 | 局部列表；结束后未作为详细运行记录提供 |
+| BasicAgent 本次 `messages` | 系统、旧问答、当前问题、调用、结果、最终答案 | 局部列表；返回时深复制为 AgentResult.transcript |
 | `ReActAgent.current_history` | 当前系统提示、问题、调用、结果和最终答案 | 每次 `run()` 重建；上次会话不自动注入 |
+| `AgentResult.transcript` | 本次运行消息快照 | 独立于 Agent 可变状态；成功与已知失败都提供，不自动持久化 |
 
 没有写入成功历史，不等于工具没有运行。异常终止之前发生的外部副作用不会自动撤销。当前也没有持久化检查点或失败恢复机制。
 
@@ -635,7 +663,7 @@ flowchart TD
 
 ### 5.1 本次重新执行的离线测试
 
-在现有 Conda 环境执行 `unittest` 测试发现，结果为 **57 项测试通过**。测试数量按测试方法计，部分方法内部包含多个子用例。
+在现有 Conda 环境执行 `unittest` 测试发现，结果为 **65 项测试通过**。测试数量按测试方法计，部分方法内部包含多个子用例。
 
 | 测试文件 | 数量 | 主要覆盖 |
 | --- | ---: | --- |
@@ -645,7 +673,8 @@ flowchart TD
 | [test_agents.py](tests/test_agents.py) | 19 | 两类 Agent、历史、多调用、连续工具轮次、错误反馈与预算 |
 | [test_tools.py](tests/test_tools.py) | 12 | 注册、函数包装、Schema、严格校验、结果序列化及计算器 |
 | [test_tool_call.py](tests/test_tool_call.py) | 7 | 模拟 SDK 与真实本地计算器的整链路、协议错误、空流和提示策略 |
-| **合计** | **57** | **离线通过，不代表全部边界或所有供应商均已覆盖** |
+| [test_results.py](tests/test_results.py) | 8 | 三态、容器隔离、成功与失败记录、工具恢复、消息快照及异常边界 |
+| **合计** | **65** | **离线通过，不代表全部边界或所有供应商均已覆盖** |
 
 复现命令：
 
@@ -670,9 +699,9 @@ python -B examples/single_qa.py --with-tools
 | --- | --- | --- |
 | 配置 | 统一入口、优先级、校验、配置快照 | 预留字段尚未全部生效 |
 | 模型 | 原生函数工具请求与响应转换 | 用量、多候选及供应商扩展字段未完整处理 |
-| Agent | 共享循环、两种提示与历史策略、轮数停止 | 独立工具总预算、统一停止结构、失败分类仍待补齐 |
+| Agent | 共享循环、两种提示与历史策略、轮数停止、四字段 AgentResult | 独立工具总预算、更细的失败分类仍待补齐 |
 | 工具 | 单一注册表、Pydantic 参数、结构化结果 | 服务端严格 Schema、执行资源限制及副作用控制未实现 |
-| 历史 | 成功问答与 ReAct 本次消息 | 裁剪、持久化、详细运行结果与恢复未实现 |
+| 历史 | 成功问答、本次消息与独立 transcript 快照 | 裁剪、持久化与恢复未实现 |
 | 流式与并发 | 普通文本流、空文本检查 | 流式工具、异步、取消及并发保护未实现 |
 | 多智能体 | 可分别实例化多个 Agent | Agent 间通信、共享状态、节点依赖、调度与 Workflow 尚未实现 |
 

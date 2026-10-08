@@ -6,7 +6,7 @@ from pathlib import Path
 import sys
 from unittest.mock import Mock, patch
 
-from bpcagent import BasicAgent, CalculatorTool, Config, LLMResponse, Message, MyLLM, ToolCall, ToolRegistry
+from bpcagent import AgentResult, BasicAgent, CalculatorTool, Config, LLMResponse, Message, MyLLM, ToolCall, ToolRegistry
 from bpcagent.agents.exceptions import AgentException, BasicException
 
 
@@ -80,13 +80,21 @@ def main() -> int:
         if args.with_tools:
             # 只在示例中检查真实执行；生产工具及 Agent 不增加测试追踪字段。
             with patch.object(calculator, "run", wraps=calculator.run) as execution:
-                answer = (run_protocol_test(agent.llm, registry, args.question) if args.protocol_test
+                result = (run_protocol_test(agent.llm, registry, args.question) if args.protocol_test
                           else agent.run(args.question))
-                if execution.call_count == 0:
+                if execution.call_count == 0 and (args.protocol_test or result.finished is True):
                     raise AgentException("验证失败：模型未实际调用计算器，直接回答不算通过")
-                print(f"已验证：CalculatorTool.run 实际执行 {execution.call_count} 次。")
+                print(f"CalculatorTool.run 实际执行 {execution.call_count} 次。")
         else:
-            answer = agent.run(args.question)
+            result = agent.run(args.question)
+        if isinstance(result, AgentResult):
+            if result.finished is False:
+                print(f"运行未完成：{result.info['stop_reason']}：{result.info['error']}", file=sys.stderr)
+                return 1
+            answer = result.output.get("text", "")
+        else:
+            # 独立协议检查直接返回文本，不经过 Agent.run。
+            answer = result
         print(f"\n回答：{answer}")
         print(f"本次保存了 {len(agent.get_history())} 条消息。")
         return 0

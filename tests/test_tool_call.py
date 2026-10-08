@@ -54,7 +54,7 @@ class NativeToolTests(unittest.TestCase):
 
                 self.client.chat.completions.create.side_effect = create
                 agent = cls("calculator", config=self.config, tool_registry=registry)
-                self.assertEqual(agent.run("计算 2+3*4"), "结果是 14。")
+                self.assertEqual(agent.run("计算 2+3*4").output["text"], "结果是 14。")
                 calculator.run.assert_called_once()
                 self.assertEqual(calculator.run.call_args.args[0].input, "2+3*4")
                 self.assertEqual(len(requests), 2)
@@ -71,8 +71,9 @@ class NativeToolTests(unittest.TestCase):
                     calculator.run = Mock(wraps=calculator.run)
                     registry.register_tool(calculator)
                     agent = cls("test", self.llm, config=self.config, tool_registry=registry)
-                    with self.assertRaises(LLMException):
-                        agent.run("计算")
+                    result = agent.run("计算")
+                    self.assertIs(result.finished, False)
+                    self.assertEqual(result.info["stop_reason"], "model_error")
                     calculator.run.assert_not_called()
                     self.assertEqual(agent.get_history(), [])
 
@@ -83,8 +84,9 @@ class NativeToolTests(unittest.TestCase):
             registry.register_tool(CalculatorTool())
             registry.execute_tool = Mock(wraps=registry.execute_tool)
             agent = BasicAgent("test", self.llm, config=self.config, tool_registry=registry)
-            with self.assertRaises(AgentException):
-                agent.run("计算")
+            result = agent.run("计算")
+            self.assertIs(result.finished, False)
+            self.assertEqual(result.info["stop_reason"], "invalid_response")
             registry.execute_tool.assert_not_called()
             self.assertEqual(agent.get_history(), [])
         for response in (NS(choices=[]), sdk_response(refusal="refused")):

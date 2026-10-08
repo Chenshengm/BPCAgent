@@ -8,7 +8,7 @@ import os
 from unittest.mock import Mock, patch
 
 from bpcagent import BasicAgent, CalculatorTool, Config, MyLLM, ReActAgent, ToolRegistry, ToolArgs, Tool, ToolCall, LLMResponse
-from bpcagent.agents.exceptions import AgentException, ConfigException
+from bpcagent.agents.exceptions import ConfigException
 
 
 def tool_response(name="calculate", arguments='{"input":"1+1"}', call_id="call_1"):
@@ -60,7 +60,7 @@ class AgentTests(unittest.TestCase):
         llm, calls = self.make_model("你好！")
         agent = BasicAgent("test", llm, sys_prompt="简洁回答。", enable_tool_calling=False)
 
-        self.assertEqual(agent.run("你好"), "你好！")
+        self.assertEqual(agent.run("你好").output["text"], "你好！")
         self.assertEqual(calls[0], [
             {"role": "system", "content": "简洁回答。"},
             {"role": "user", "content": "你好"},
@@ -73,7 +73,7 @@ class AgentTests(unittest.TestCase):
         llm, calls = self.make_model("已记住。", "小明", "不知道")
         agent = BasicAgent("test", llm, enable_tool_calling=False)
         agent.run("我叫小明")
-        self.assertEqual(agent.run("我叫什么？"), "小明")
+        self.assertEqual(agent.run("我叫什么？").output["text"], "小明")
         self.assertEqual(calls[1][1:3], [
             {"role": "user", "content": "我叫小明"},
             {"role": "assistant", "content": "已记住。"},
@@ -92,7 +92,7 @@ class AgentTests(unittest.TestCase):
                 registry.register_tool(calculator)
                 agent = BasicAgent("test", llm, tool_registry=registry)
 
-                self.assertEqual(agent.run("计算 2+3*4"), "结果是 14。")
+                self.assertEqual(agent.run("计算 2+3*4").output["text"], "结果是 14。")
                 calculator.run.assert_called_once()
                 self.assertEqual(calculator.run.call_args.args[0].input, "2+3*4")
                 self.assertIn("14", calls[1][-1]["content"])
@@ -107,7 +107,7 @@ class AgentTests(unittest.TestCase):
         registry.register_tool(CalculatorTool())
         agent = ReActAgent("test", llm, tool_registry=registry)
 
-        self.assertEqual(agent.run("计算 2+3*4"), "14")
+        self.assertEqual(agent.run("计算 2+3*4").output["text"], "14")
         self.assertIn('"data":14', calls[1][-1]["content"])
 
     def test_function_tool_description_and_execution(self):
@@ -126,8 +126,9 @@ class AgentTests(unittest.TestCase):
                 registry.register_tool(calculator)
                 agent = BasicAgent("test", llm, config=Config(max_tool_iterations=2),
                                    tool_registry=registry)
-                with self.assertRaisesRegex(AgentException, "step_limit_exceeded"):
-                    agent.run("calculate", max_tool_iterations=override, temperature=0.1)
+                result = agent.run("calculate", max_tool_iterations=override, temperature=0.1)
+                self.assertIs(result.finished, False)
+                self.assertEqual(result.info["stop_reason"], "step_limit_exceeded")
                 self.assertEqual(calculator.run.call_count, expected_iterations)
                 # 轮次耗尽后不再额外请求模型，也不写入成功历史。
                 self.assertEqual(llm.invoke.call_count, expected_iterations)
@@ -145,8 +146,9 @@ class AgentTests(unittest.TestCase):
                 registry.register_tool(CalculatorTool())
                 config = Config(max_steps=2)
                 agent = ReActAgent("test", llm, config=config, max_steps=override, tool_registry=registry)
-                with self.assertRaisesRegex(AgentException, "step_limit_exceeded"):
-                    agent.run("calculate")
+                result = agent.run("calculate")
+                self.assertIs(result.finished, False)
+                self.assertEqual(result.info["stop_reason"], "step_limit_exceeded")
                 self.assertEqual(agent.get_history(), [])
                 self.assertEqual(llm.invoke.call_count, expected_steps)
                 self.assertEqual(agent.config.max_steps, expected_steps)
@@ -199,7 +201,7 @@ class AgentTests(unittest.TestCase):
                 factory.return_value.chat.completions.create.return_value = SimpleNamespace(
                     choices=[SimpleNamespace(message=SimpleNamespace(content="你好", tool_calls=None),
                                              finish_reason="stop")])
-                self.assertEqual(agent.run("hello", temperature=0.1), "你好")
+                self.assertEqual(agent.run("hello", temperature=0.1).output["text"], "你好")
                 request = factory.return_value.chat.completions.create.call_args.kwargs
                 self.assertEqual(request["temperature"], 0.1)
                 self.assertEqual(agent.config.temperature, 0.3 if config is not None else 0.2)
@@ -228,7 +230,7 @@ class AgentTests(unittest.TestCase):
                     finish = "完成"
                     llm, calls = self.make_model(first, finish)
                     agent = agent_cls("test", llm, tool_registry=registry, sys_prompt="系统要求")
-                    self.assertEqual(agent.run("echo"), "完成")
+                    self.assertEqual(agent.run("echo").output["text"], "完成")
                     registry.execute_tool.assert_called_once_with("nested-echo", arguments, call_id="call_1")
                     self.assertEqual(calls[0][0]["role"], "system")
                     self.assertIn("系统要求", calls[0][0]["content"])
@@ -249,7 +251,7 @@ class AgentTests(unittest.TestCase):
                 registry = ToolRegistry()
                 registry.register_tool(CalculatorTool())
                 agent = cls("test", llm, tool_registry=registry)
-                self.assertEqual(agent.run("计算"), "2 和 4")
+                self.assertEqual(agent.run("计算").output["text"], "2 和 4")
                 results = [json.loads(message["content"]) for message in calls[1][-2:]]
                 self.assertEqual([message["tool_call_id"] for message in calls[1][-2:]], ["call_a", "call_b"])
                 self.assertEqual(calls[1][-3]["role"], "assistant")
@@ -269,7 +271,7 @@ class AgentTests(unittest.TestCase):
                     registry.register_tool(CalculatorTool())
                     registry.execute_tool = Mock(wraps=registry.execute_tool)
                     agent = agent_cls("test", llm, tool_registry=registry)
-                    self.assertEqual(agent.run("计算"), "2")
+                    self.assertEqual(agent.run("计算").output["text"], "2")
                     registry.execute_tool.assert_called_once_with("calculate", {"input": "1+1"}, call_id="call_1")
                     self.assertIn("invalid_arguments", calls[1][-1]["content"])
 
@@ -283,7 +285,7 @@ class AgentTests(unittest.TestCase):
                 calculator.run = Mock(wraps=calculator.run)
                 registry.register_tool(calculator)
                 agent = cls("test", llm, tool_registry=registry)
-                self.assertEqual(agent.run("先计算 1+1，再把结果乘以 3"), "6")
+                self.assertEqual(agent.run("先计算 1+1，再把结果乘以 3").output["text"], "6")
                 self.assertEqual(calculator.run.call_count, 2)
                 self.assertEqual(json.loads(calls[1][-1]["content"])["data"], 2)
                 self.assertEqual(json.loads(calls[2][-1]["content"])["data"], 6)
@@ -293,8 +295,9 @@ class AgentTests(unittest.TestCase):
         for cls in (BasicAgent, ReActAgent):
             llm, _ = self.make_model(tool_response())
             agent = cls("test", llm)
-            with self.assertRaisesRegex(AgentException, "invalid_response"):
-                agent.run("hello")
+            result = agent.run("hello")
+            self.assertIs(result.finished, False)
+            self.assertEqual(result.info["stop_reason"], "invalid_response")
             self.assertEqual(agent.get_history(), [])
 
     def test_tool_failures_reach_both_agents_as_structured_errors(self):
@@ -309,7 +312,7 @@ class AgentTests(unittest.TestCase):
                     llm, calls = self.make_model(first, finish)
                     registry = ToolRegistry()
                     registry.register_tool(CalculatorTool())
-                    self.assertEqual(agent_cls("test", llm, tool_registry=registry).run("计算"), "无法计算")
+                    self.assertEqual(agent_cls("test", llm, tool_registry=registry).run("计算").output["text"], "无法计算")
                     self.assertIn(code, calls[1][-1]["content"])
 
     def test_empty_response_and_invalid_final_do_not_save_success_history(self):
@@ -318,8 +321,9 @@ class AgentTests(unittest.TestCase):
                 with self.subTest(agent=agent_cls.__name__, response=response):
                     llm, _ = self.make_model(response)
                     agent = agent_cls("test", llm)
-                    with self.assertRaisesRegex(AgentException, "empty_response"):
-                        agent.run("hello")
+                    result = agent.run("hello")
+                    self.assertIs(result.finished, False)
+                    self.assertEqual(result.info["stop_reason"], "empty_response")
                     self.assertEqual(agent.get_history(), [])
 
     def test_repeated_invalid_calls_stop_at_budget(self):
@@ -331,8 +335,9 @@ class AgentTests(unittest.TestCase):
             registry.register_tool(CalculatorTool())
             registry.execute_tool = Mock(wraps=registry.execute_tool)
             agent = agent_cls("test", llm, tool_registry=registry, config=config)
-            with self.assertRaisesRegex(AgentException, "step_limit_exceeded"):
-                agent.run("hello")
+            result = agent.run("hello")
+            self.assertIs(result.finished, False)
+            self.assertEqual(result.info["stop_reason"], "step_limit_exceeded")
             self.assertEqual(llm.invoke.call_count, 2)
             registry.execute_tool.assert_not_called()
             self.assertEqual(agent.get_history(), [])

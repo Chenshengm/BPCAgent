@@ -1,14 +1,16 @@
 """Agent base class and the Basic / ReAct execution strategies."""
 
 from abc import ABC, abstractmethod
+from copy import deepcopy
 import json
 from typing import Iterator, Optional
 
 from .config import Config
 from .messages import LLMResponse, Message, ToolCall
 from .models import MyLLM
+from .result import AgentResult
 from ..tools import ToolRegistry, ToolResult
-from .exceptions import AgentException, ConfigException
+from .exceptions import AgentException, ConfigException, LLMException
 
 
 def _reject_constant(value):
@@ -62,8 +64,8 @@ class Agent(ABC):
         self._history: list[Message] = []
 
     @abstractmethod
-    def run(self, input: str, **kwargs) -> str:
-        """运行Agent"""
+    def run(self, input: str, **kwargs) -> AgentResult:
+        """运行 Agent，返回产物、消息快照与完成状态。"""
         pass
 
     def add_message(self, message: Message):
@@ -82,15 +84,20 @@ class Agent(ABC):
         """检查响应结构和结束状态，工具调用允许没有文本。"""
         response = self.llm.invoke(messages, **kwargs)
         if not isinstance(response, LLMResponse):
-            raise AgentException("invalid_response: 模型必须返回 LLMResponse")
+            raise AgentException("模型必须返回 LLMResponse", code="invalid_response")
+        # 先保存已收到的响应，异常结束时也能查看当时的内容。
+        message = {"role": "assistant", "content": response.content}
+        if response.tool_calls:
+            message["tool_calls"] = [call.to_dict() for call in response.tool_calls]
+        messages.append(message)
         if response.finish_reason not in {"stop", "tool_calls"}:
-            raise AgentException(f"invalid_response: 模型未正常结束: {response.finish_reason}")
+            raise AgentException(f"模型未正常结束: {response.finish_reason}", code="invalid_response")
         if response.tool_calls:
             return response
         if response.finish_reason == "tool_calls":
-            raise AgentException("invalid_response: 工具调用结束原因缺少调用列表")
+            raise AgentException("工具调用结束原因缺少调用列表", code="invalid_response")
         if not response.content or not response.content.strip():
-            raise AgentException("empty_response: 模型未返回有效文本")
+            raise AgentException("模型未返回有效文本", code="empty_response")
         return response
 
     def _execute_tool_call(self, call: ToolCall) -> ToolResult:
@@ -103,7 +110,19 @@ class Agent(ABC):
             raise AgentException("未配置工具注册表")
         return self.tool_registry.execute_tool(call.name, arguments, call_id=call.id)
 
-    def _run_with_tools(self, messages: list, input: str, max_tool_iterations: int, **kwargs) -> str:
+    def _run_with_tools(self, messages: list, input: str, max_tool_iterations: int, **kwargs) -> AgentResult:
+        """包装本次运行；配置错误和未标识的程序错误继续向外抛出。"""
+        try:
+            text = self._run_tool_loop(messages, input, max_tool_iterations, **kwargs)
+        except (LLMException, AgentException) as exc:
+            if isinstance(exc, AgentException) and exc.code is None:
+                raise
+            reason = "model_error" if isinstance(exc, LLMException) else exc.code
+            return AgentResult(transcript=deepcopy(messages),
+                               info={"stop_reason": reason, "error": str(exc)}, finished=False)
+        return AgentResult(output={"text": text}, transcript=deepcopy(messages), finished=True)
+
+    def _run_tool_loop(self, messages: list, input: str, max_tool_iterations: int, **kwargs) -> str:
         """共享原生工具循环；每轮请求一次模型，全部结果配对后才进入下一轮。"""
         if "tools" in kwargs:
             raise ConfigException("Agent 的 tools 必须来自工具注册表")
@@ -117,19 +136,16 @@ class Agent(ABC):
             # record
             # print(response.content if not response.tool_calls else response)
             if not response.tool_calls:
-                messages.append(Message(response.content, "assistant").to_dict())
                 self.add_message(Message(input, "user"))
                 self.add_message(Message(response.content, "assistant"))
                 return response.content
             if not tools:
-                raise AgentException("invalid_response: 未启用工具却收到工具调用")
-            # 先验证整批调用，再执行，避免发现缺失或重复 ID 前已执行部分工具。
-            assistant = Message(response.content, "assistant", tool_calls=response.tool_calls)
-            messages.append(assistant.to_dict())
+                raise AgentException("未启用工具却收到工具调用", code="invalid_response")
+            # LLMResponse 已校验整批调用，assistant 消息已在响应入口保存。
             for call in response.tool_calls:
                 result = self._execute_tool_call(call)
                 messages.append(Message(result.model_dump_json(), "tool", tool_call_id=call.id).to_dict())
-        raise AgentException("step_limit_exceeded: 已达到模型交互轮次上限，尚未获得最终回答")
+        raise AgentException("已达到模型交互轮次上限，尚未获得最终回答", code="step_limit_exceeded")
 
     def __str__(self) -> str:
         return f"Agent(name={self.name}, model={self.llm.model})"
@@ -156,7 +172,7 @@ class BasicAgent(Agent):
         self.enable_tool_calling = enable_tool_calling and tool_registry is not None
         print(f"✅ Agent {name} 初始化完成，工具调用: {'启用' if self.enable_tool_calling else '禁用'}")
 
-    def run(self, input: str, max_tool_iterations: Optional[int] = None, **kwargs) -> str:
+    def run(self, input: str, max_tool_iterations: Optional[int] = None, **kwargs) -> AgentResult:
         """
         实现简单的对话逻辑，支持工具调用
         """
@@ -283,7 +299,7 @@ class ReActAgent(Agent):
         self.current_history: list[dict] = []
         print(f"✅ ReAct Agent {name} 初始化完成，最大步数: {self.max_steps}")
 
-    def run(self, input: str, **kwargs) -> str:
+    def run(self, input: str, **kwargs) -> AgentResult:
         """建立本次消息历史，使用共享原生工具循环完成推理与行动。"""
         self.current_history = []
         print(f"\n🤖 ReAct Agent {self.name} 开始处理问题: {input}")

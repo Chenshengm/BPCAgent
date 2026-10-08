@@ -20,12 +20,14 @@ BPCAgent/
 │   ├── test_config.py      # 配置优先级、校验、快照与脱敏
 │   ├── test_models.py      # 模型适配、流式与异常传播
 │   ├── test_messages.py    # 消息序列化与角色约束
-│   └── test_tool_call.py   # 原生协议与真实计算器的离线集成测试
+│   ├── test_tool_call.py   # 原生协议与真实计算器的离线集成测试
+│   └── test_results.py     # Agent 结果、消息快照与失败边界
 └── src/bpcagent/
     ├── __init__.py         # 包的公共接口
     ├── agents/
     │   ├── __init__.py     # 智能体相关接口导出
     │   ├── agents.py       # Agent、BasicAgent、ReActAgent
+    │   ├── result.py       # AgentResult 运行产物与记录
     │   ├── models.py       # MyLLM 模型接口
     │   ├── messages.py     # Message、ToolCall、LLMResponse
     │   ├── config.py       # Config
@@ -108,11 +110,33 @@ agent = BasicAgent(
     sys_prompt="你是一个简洁的助手，计算问题请调用工具。",
     tool_registry=registry,
 )
-answer = agent.run("计算 2+3*4。")
-print(answer)
+result = agent.run("计算 2+3*4。")
+if result.finished is False:
+    print(result.info)
+else:
+    print(result.output.get("text", ""))
 ```
 
 同一个 Agent 实例保存多次 `run()` 的输入和最终回答，可以使用 `get_history()` 查看、`clear_history()` 清空。普通流式问答使用 `run_using_stream()`，需要关闭工具调用；启用非空工具注册表时该入口会明确报错。空流或纯空白流不会写入成功历史。
+
+### Agent 运行结果
+
+`BasicAgent.run()` 和 `ReActAgent.run()` 统一返回 `AgentResult`，可通过 `from bpcagent import AgentResult` 导入。
+
+| 字段 | 当前约定 |
+| --- | --- |
+| `output` | 产物字典；成功回答为 `{"text": answer}`，已知失败为 `{}` |
+| `transcript` | 本次完整消息列表的深复制快照，含系统提示、注入的历史、当前输入、模型回复及工具结果 |
+| `info` | 附加信息；成功时为空，已知失败包含 `stop_reason` 与 `error` |
+| `finished` | `True` 表示正常完成，`False` 表示已知未完成，`None` 表示不跟踪完成状态 |
+
+当前两类 Agent 会明确填写 `True/False`；数据类默认值为 `None`，不等同于失败，也不决定是否可用于训练。正常完成只表示运行得到了最终回答，不代表任务答案正确；评价与奖励属于未来 Task 层的 `TaskResult`，本次没有实现该层。
+
+已知失败原因包括 `model_error`、`invalid_response`、`empty_response`、`step_limit_exceeded`。这些失败保留已收集的消息，不写入成功会话历史。工具错误仍反馈模型，模型随后给出最终回答时可正常完成。配置错误、未标识的 `AgentException` 和未被下层包装的程序异常继续抛出。流式接口仍返回文本迭代器，异常行为不变。
+
+`transcript` 是消息记录，不含每次请求的参数快照、完整供应商响应或用量；无法转换为 `LLMResponse` 的响应不会被伪造为 assistant 消息。可用 `dataclasses.asdict(result)` 转为字典；自行放入 `output/info` 的对象是否支持 JSON 序列化由调用方负责。
+
+本次结果接口验证：65 项离线测试通过，覆盖完成状态、工具错误恢复、轮数停止、失败记录和快照隔离；未请求真实模型。
 
 ## 统一配置入口
 
@@ -182,8 +206,8 @@ updated = Config.resolve(config, overrides={"max_steps": 8}, environ={})
 - `BasicAgent.run(..., max_tool_iterations=2)` 可覆盖本次工具迭代上限，不改变 Agent 默认值。
 - `ReActAgent(..., max_steps=8)` 可覆盖构造时的步数设置。
 - 未显式提供这些参数时，使用 Agent 配置中的值。
-- BasicAgent 的 `max_tool_iterations` 限制工具模式下的模型交互轮次，最终回答也占一轮。一轮可以执行多个工具，因此它不是工具执行总次数上限。达到上限仍无最终回答时抛出 `AgentException`，不再追加模型请求，也不保存成功历史。
-- ReActAgent 达到步数上限同样抛出 `AgentException`；使用传入的系统提示词，每次运行重新建立推理历史，尚不将上次会话自动拼入本次提示词。
+- BasicAgent 的 `max_tool_iterations` 限制模型交互轮次，最终回答也占一轮。一轮可以执行多个工具，因此它不是工具执行总次数上限。达到上限仍无最终回答时返回 `finished=False`、`info["stop_reason"]="step_limit_exceeded"`，不再追加模型请求，也不保存成功历史。
+- ReActAgent 达到步数上限同样返回未完成的结果；使用传入的系统提示词，每次运行重新建立推理历史，尚不将上次会话自动拼入本次提示词。
 
 ### 接口与错误处理
 
@@ -202,7 +226,7 @@ print(llm.config.timeout)
 
 构造时的其他模型请求参数（如 `top_p`、`extra_body`）会传递给 SDK，同名单次参数覆盖构造参数，字典按整项替换。提供方特有参数由 SDK/服务端校验；`model`、连接配置和 Agent 参数不能在单次模型请求中覆盖，`stream` 由 `invoke/think` 决定。
 
-`resolve` 及模型请求设置非法时抛出 `ConfigException`；直接 `Config(...)` 校验失败抛出 Pydantic `ValidationError`；SDK 调用失败抛出 `LLMException`。流式配置错误在开始迭代生成器时抛出。
+`resolve` 及模型请求设置非法时抛出 `ConfigException`；直接 `Config(...)` 校验失败抛出 Pydantic `ValidationError`；直接调用模型时 SDK 请求失败抛出 `LLMException`，Agent 非流式运行将其转为 `model_error` 结果。流式配置错误在开始迭代生成器时抛出。
 
 `config.to_dict()` 和配置展示会掩码密钥，适合诊断，不能用于还原客户端凭据。`llm.config.api_key` 保持 `SecretStr` 类型，客户端初始化时才通过 `get_secret_value()` 取出明文传给 SDK；明文不应写入日志。
 
@@ -315,16 +339,16 @@ tools = registry.to_openai_tools()
 
 ### 原生工具调用
 
-`MyLLM.invoke()` 返回 `LLMResponse`：`content` 为可空文本，`tool_calls` 为调用列表，`finish_reason` 为结束原因。每个 `ToolCall` 含 `id`、`name`、原始 JSON 字符串 `arguments`。模型层不执行工具；`Agent.run()` 仍返回最终答案字符串。
+`MyLLM.invoke()` 返回 `LLMResponse`：`content` 为可空文本，`tool_calls` 为调用列表，`finish_reason` 为结束原因。每个 `ToolCall` 含 `id`、`name`、原始 JSON 字符串 `arguments`。模型层不执行工具；`Agent.run()` 返回 `AgentResult`。
 
 BasicAgent 和 ReActAgent 共用以下循环：
 
 1. 从注册表取得 `to_openai_tools()`，通过 `tools` 参数请求模型。
 2. 有调用时先保存 assistant 消息，按顺序解析参数、校验并执行工具。
 3. 每次调用都追加一条 `role="tool"` 消息，用 `tool_call_id` 与原请求配对，正文为 `ToolResult` JSON。
-4. 全部结果回传后再次请求模型；无工具调用且文本有效、正常结束时返回答案。
+4. 全部结果回传后再次请求模型；无工具调用且文本有效、正常结束时，将答案放入 `AgentResult.output["text"]` 并返回。
 
-参数错误、未知工具和执行错误均反馈结构化结果并占用轮次。调用 ID 缺失或同批重复、响应截断或拒绝、空响应会报错；不写入成功会话历史。多工具调用先顺序执行。服务不支持原生协议时直接报告失败。
+参数错误、未知工具和执行错误均反馈结构化结果并占用轮次。调用 ID 缺失或同批重复、响应截断或拒绝、空响应使 Agent 返回未完成的结果；不写入成功会话历史。多工具调用按顺序执行。服务不支持原生协议时直接报告失败。
 
 工具请求参数在每次 `invoke()` 时提供，不能作为 `MyLLM` 构造默认值或藏在 `extra_body` 中。Agent 的 `tools` 只能来自注册表。`tool_choice` 等单次 `run()` 参数会应用于该运行的每一轮，普通 Agent 使用默认自动选择；不要在希望模型自行结束的循环中持续强制调用工具。
 
@@ -347,7 +371,7 @@ python -B examples/single_qa.py --live --with-tools --protocol-test "请计算 2
 
 **已完成：** 原生请求与响应、调用 ID 配对、共享 Agent 循环、本地参数校验和实际计算器执行验证。
 
-**待实现：** 服务端严格 Schema 模式、独立工具总调用预算、用量与详细运行记录、统一重试预算、异步及流式工具循环。
+**待实现：** 服务端严格 Schema 模式、独立工具总调用预算、用量与记录持久化、统一重试预算、异步及流式工具循环。内存中的消息快照已由 `AgentResult.transcript` 提供。
 
 ### 工具离线演示
 
