@@ -119,6 +119,8 @@ else:
 
 同一个 Agent 实例保存多次 `run()` 的输入和最终回答，可以使用 `get_history()` 查看、`clear_history()` 清空。普通流式问答使用 `run_using_stream()`，需要关闭工具调用；启用非空工具注册表时该入口会明确报错。空流或纯空白流不会写入成功历史。
 
+进入共享执行循环后，每次运行结束（包括失败）会保存到当前工作目录的 `log/<Agent名称>_<日期时间>.json`，每次生成独立文件，不覆盖旧记录。JSON 包含 `history`（全部 `_history`，保留时间戳等字段）和 `transcript`（本次完整消息，包含系统提示、输入、模型回复、工具请求与结果）。工具请求位于 assistant 消息的 `tool_calls` 中，工具结果位于 `role="tool"` 消息的 `content` 中，以 JSON 字符串保留原始消息格式，通过 `tool_call_id` 配对。失败时也保留此前已发生的工具交互；这些记录不会额外加入 `_history`。流式运行在迭代结束或生成器关闭时保存已收到的文本；尚未开始执行或在进入上述执行阶段前参数检查失败时不生成文件。保存失败会提示警告，日志目录已加入 Git 忽略规则。
+
 ### Agent 运行结果
 
 `BasicAgent.run()` 和 `ReActAgent.run()` 统一返回 `AgentResult`，可通过 `from bpcagent import AgentResult` 导入。
@@ -371,7 +373,7 @@ python -B examples/single_qa.py --live --with-tools --protocol-test "请计算 2
 
 **已完成：** 原生请求与响应、调用 ID 配对、共享 Agent 循环、本地参数校验和实际计算器执行验证。
 
-**待实现：** 服务端严格 Schema 模式、独立工具总调用预算、用量与记录持久化、统一重试预算、异步及流式工具循环。内存中的消息快照已由 `AgentResult.transcript` 提供。
+**待实现：** 服务端严格 Schema 模式、独立工具总调用预算、用量、统一重试预算、异步及流式工具循环。消息快照已由 `AgentResult.transcript` 提供并保存到本地 JSON 日志；检查点与恢复尚未实现。
 
 ### 工具离线演示
 

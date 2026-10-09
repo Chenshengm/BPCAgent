@@ -2,8 +2,11 @@
 
 from abc import ABC, abstractmethod
 from copy import deepcopy
+from datetime import datetime
 import json
+from pathlib import Path
 from typing import Iterator, Optional
+import warnings
 
 from .config import Config
 from .messages import LLMResponse, Message, ToolCall
@@ -79,6 +82,22 @@ class Agent(ABC):
     def get_history(self) -> list[Message]:
         """获取历史记录"""
         return self._history.copy()
+
+    def _save_history(self, messages: list[dict]) -> None:
+        """保存全部会话历史和本次交互消息，包含工具调用请求与结果。"""
+        try:
+            log_dir = Path("log")
+            log_dir.mkdir(parents=True, exist_ok=True)
+            name = "".join(c if c.isalnum() or c in "_-" else "_" for c in self.name) or "agent"
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            data = {
+                "history": [message.model_dump(mode="json") for message in self._history],
+                "transcript": messages,
+            }
+            with (log_dir / f"{name}_{timestamp}.json").open("x", encoding="utf-8") as file:
+                json.dump(data, file, ensure_ascii=False, indent=2)
+        except (OSError, ValueError, TypeError) as exc:
+            warnings.warn(f"保存 Agent 历史失败：{exc}", RuntimeWarning, stacklevel=2)
     
     def _invoke_response(self, messages, **kwargs) -> LLMResponse:
         """检查响应结构和结束状态，工具调用允许没有文本。"""
@@ -120,6 +139,8 @@ class Agent(ABC):
             reason = "model_error" if isinstance(exc, LLMException) else exc.code
             return AgentResult(transcript=deepcopy(messages),
                                info={"stop_reason": reason, "error": str(exc)}, finished=False)
+        finally:
+            self._save_history(messages)
         return AgentResult(output={"text": text}, transcript=deepcopy(messages), finished=True)
 
     def _run_tool_loop(self, messages: list, input: str, max_tool_iterations: int, **kwargs) -> str:
@@ -224,15 +245,20 @@ class BasicAgent(Agent):
 
         # 生成流式调用
         full_response = ""
-        for chunk in self.llm.think(messages, **kwargs):
-            full_response += chunk
-            yield chunk
+        try:
+            for chunk in self.llm.think(messages, **kwargs):
+                full_response += chunk
+                yield chunk
 
-        if not full_response.strip():
-            raise AgentException("empty_response: 模型未返回有效文本")
-        # 保存到历史记录
-        self.add_message(Message(input, "user"))
-        self.add_message(Message(full_response, "assistant"))
+            if not full_response.strip():
+                raise AgentException("empty_response: 模型未返回有效文本")
+            # 保存到历史记录
+            self.add_message(Message(input, "user"))
+            self.add_message(Message(full_response, "assistant"))
+        finally:
+            if full_response:
+                messages.append({"role": "assistant", "content": full_response})
+            self._save_history(messages)
 
     # --- 添加一些简便的工具处理方式 ---
     def add_tool(self, tool) -> None:
