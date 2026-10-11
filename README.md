@@ -22,7 +22,7 @@ BPCAgent/
 │   ├── test_messages.py    # 消息序列化与角色约束
 │   ├── test_tool_call.py   # 原生协议与真实计算器的离线集成测试
 │   └── test_results.py     # Agent 结果、消息快照与失败边界
-└── src/bpcagent/
+└── src/                   # 映射为 Python 包 bpcagent
     ├── __init__.py         # 包的公共接口
     ├── agents/
     │   ├── __init__.py     # 智能体相关接口导出
@@ -39,6 +39,8 @@ BPCAgent/
 ```
 
 按职责分为 `agents` 和 `tools` 两个 Python 包。安装后可从任意工作目录导入 `bpcagent`，无需手动修改 `sys.path`。
+
+`pyproject.toml` 将物理目录 `src/` 映射为 `bpcagent` 包，因此导入方式仍为 `from bpcagent import ...`。从旧目录结构升级后，需在使用该项目的环境中重新执行 `python -m pip install --no-build-isolation -e .`，更新可编辑安装的路径映射；仅将 `src/` 加入 `sys.path` 不会建立此映射。新增子包时需要同步更新打包配置中的 `packages` 列表。
 
 可从子包导入，也可使用顶层公共接口：
 

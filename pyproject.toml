@@ -22,9 +22,7 @@ classifiers = [
 examples = ["python-dotenv>=1,<2"]
 dev = ["build>=1,<2"]
 
-[tool.setuptools.packages.find]
-where = ["src"]
-include = ["bpcagent*"]
-
 [tool.setuptools]
+package-dir = {"bpcagent" = "src"}
+packages = ["bpcagent", "bpcagent.agents", "bpcagent.tools"]
 include-package-data = false
