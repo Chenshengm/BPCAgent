@@ -1,4 +1,0 @@
-include .env.example
-include requirements.txt
-recursive-include examples *.py
-recursive-include tests *.py
