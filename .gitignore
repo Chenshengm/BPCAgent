@@ -10,3 +10,9 @@ dist/
 .pytest_cache/
 .DS_Store
 log/
+.in
+.log
+IMPROVEMENT_PLAN.md
+TECHNICAL_REPORT.md
+/CONFIG_REFACTOR.log
+/MANIFEST.in
