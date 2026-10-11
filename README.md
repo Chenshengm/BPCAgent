@@ -35,7 +35,8 @@ BPCAgent/
     └── tools/
         ├── __init__.py     # 工具相关接口导出
         ├── tool.py         # Tool、ToolArgs、FunctionTool、ToolResult、ToolRegistry
-        └── calculator.py   # CalculatorArgs、CalculatorTool
+        ├── calculator.py   # CalculatorArgs、CalculatorTool
+        └── bpc_patient.py  # 可选的 BPC 患者工具与共享 JSON 保存器
 ```
 
 按职责分为 `agents` 和 `tools` 两个 Python 包。安装后可从任意工作目录导入 `bpcagent`，无需手动修改 `sys.path`。
@@ -51,6 +52,31 @@ from bpcagent.agents.exceptions import AgentException
 ```
 
 具体实现可通过 `bpcagent.tools.tool`、`bpcagent.tools.calculator` 等模块导入。新增内置工具在 `tools/` 下单独建模块，并在该包的 `__init__.py` 中导出；调用方自己的工具只需继承 `Tool` 并注册。
+
+### BPC 患者工具
+
+业务工具通过独立模块显式导入，不在顶层或 `tools/__init__.py` 中导出。调用方传入患者、截止日和路径配置，并为每次运行指定独立的工作目录；工厂函数负责初始化提取器、患者绑定和共享保存器：
+
+```python
+from bpcagent import ToolRegistry
+from bpcagent.tools.bpc_patient import create_patient_tools
+
+# data_dir、rules_path 和 run_dir 由应用配置，run_dir 是本次运行目录。
+tools = create_patient_tools(
+    patient_id="GENIE-DFCI-051542",
+    max_cutoff_day=220,
+    data_dir=data_dir,
+    rules_path=rules_path,
+    work_dir=run_dir,
+)
+registry = ToolRegistry()
+for tool in tools:
+    registry.register_tool(tool)
+```
+
+两个工具共用保存器，按调用顺序生成 `patient_state_day_220_001.json`、`patient_evidence_day_220_002.json` 等文件，不覆盖已有文件。状态原样保存，证据文件附带患者、癌症参数、截止日和引用列表；返回给模型的数据保持原接口结构。查询或写入失败会通过 `ToolRegistry` 返回工具错误。工具不会生成 `answer.json`，也不会读取环境文件或创建模型。
+
+工具参数模型按各自绑定的最大截止日生成；患者身份和时间边界仍由 `BoundedPatientTool` 执行。工厂函数支持可选的 `cancer_id`，省略 `rules_path` 时使用 `bpc_state` 的默认规则资源。仅调用工厂函数时才导入 `bpc_state`，普通模块导入、BPCAgent 通用功能和离线测试不要求安装患者数据包。需要复用已有绑定时，仍可直接实例化 `PatientStateTool`、`PatientEvidenceTool` 和 `PatientArtifactStore`。
 
 ## 使用 Conda 安装
 
