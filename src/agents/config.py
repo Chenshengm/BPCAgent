@@ -55,7 +55,7 @@ class Config(BaseModel):
     def reject_boolean_numbers(cls, value):
         """拒绝将布尔值当作数值配置，避免 True 被转换成数字 1。"""
         if isinstance(value, bool):
-            raise ValueError("数值配置不能使用布尔值")
+            raise ValueError("Numeric settings must not be booleans")
         return value
 
     @classmethod
@@ -79,7 +79,7 @@ class Config(BaseModel):
             return cls.model_validate(values)
         except ValidationError as exc:
             # hide_input_in_errors 隐藏错误文本中的原始输入，避免泄露凭据。
-            raise ConfigException(f"配置校验失败：{exc}") from exc
+            raise ConfigException(f"Configuration validation failed: {exc}") from exc
 
     def require_model(self) -> None:
         """检查真实模型所需的连接字段，缺失时抛出 ConfigException。
@@ -93,7 +93,7 @@ class Config(BaseModel):
             if "api_key" not in missing:
                 missing.append("api_key")
         if missing:
-            raise ConfigException("创建 MyLLM 缺少配置：" + ", ".join(missing))
+            raise ConfigException("Missing configuration for MyLLM: " + ", ".join(missing))
 
     def to_dict(self) -> dict[str, Any]:
         """返回 JSON 兼容的配置字典，密钥使用掩码，仅供展示和诊断。"""

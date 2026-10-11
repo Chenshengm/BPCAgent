@@ -27,6 +27,7 @@ BPCAgent/
     ├── agents/
     │   ├── __init__.py     # 智能体相关接口导出
     │   ├── agents.py       # Agent、BasicAgent、ReActAgent
+    │   ├── patient_state.py # PatientStateAgent，仅执行患者数据提取
     │   ├── result.py       # AgentResult 运行产物与记录
     │   ├── models.py       # MyLLM 模型接口
     │   ├── messages.py     # Message、ToolCall、LLMResponse
@@ -77,6 +78,27 @@ for tool in tools:
 两个工具共用保存器，按调用顺序生成 `patient_state_day_220_001.json`、`patient_evidence_day_220_002.json` 等文件，不覆盖已有文件。状态原样保存，证据文件附带患者、癌症参数、截止日和引用列表；返回给模型的数据保持原接口结构。查询或写入失败会通过 `ToolRegistry` 返回工具错误。工具不会生成 `answer.json`，也不会读取环境文件或创建模型。
 
 工具参数模型按各自绑定的最大截止日生成；患者身份和时间边界仍由 `BoundedPatientTool` 执行。工厂函数支持可选的 `cancer_id`，省略 `rules_path` 时使用 `bpc_state` 的默认规则资源。仅调用工厂函数时才导入 `bpc_state`，普通模块导入、BPCAgent 通用功能和离线测试不要求安装患者数据包。需要复用已有绑定时，仍可直接实例化 `PatientStateTool`、`PatientEvidenceTool` 和 `PatientArtifactStore`。
+
+## 患者数据提取智能体
+
+`PatientStateAgent` 封装患者工具的初始化与注册，仅负责提取状态和证据并保存 JSON。可从 `bpcagent`、`bpcagent.agents` 或 `bpcagent.agents.patient_state` 导入。创建时需要可用的 `bpc_state`，普通包导入不会加载该依赖。
+
+```python
+from bpcagent import Config, PatientStateAgent
+
+agent = PatientStateAgent(
+    patient_id="GENIE-DFCI-051542",
+    cutoff_day=220,
+    data_dir=data_dir,
+    rules_path=rules_path,
+    work_dir=run_dir,
+    config=Config(max_tool_iterations=6),
+)
+result = agent.run()
+print(result.output.get("text", "") if result.finished else result.info)
+```
+
+模型成功调用指定日期的状态工具，再成功查询同日的至少一条证据后，程序立即结束任务，返回固定格式的执行状态，不再请求模型生成病情总结或分析。`finished=True` 以本次工具执行成功为依据；只有文字回答会返回 `incomplete_extraction`，轮次用尽返回 `step_limit_exceeded`。模型和工具的实际交互仍保留在 `transcript` 及 `log/PatientStateAgent_*.json` 中，不生成 `answer.json`。每次 `run()` 重新判断完成状态，不沿用前次会话。
 
 ## 使用 Conda 安装
 

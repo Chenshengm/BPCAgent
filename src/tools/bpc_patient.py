@@ -16,12 +16,12 @@ if TYPE_CHECKING:
 
 
 class StateArgs(ToolArgs):
-    cutoff_day: int = Field(description="相对首次 BPC 癌症诊断的截止日，含当日。")
+    cutoff_day: int = Field(description="Inclusive cutoff day relative to the first BPC cancer diagnosis.")
 
 
 class EvidenceArgs(StateArgs):
     evidence_refs: list[str] = Field(
-        min_length=1, description="同一截止日的状态中返回的证据引用。",
+        min_length=1, description="Evidence references returned in the patient state for the same cutoff day.",
     )
 
 
@@ -31,7 +31,7 @@ def _bound_schema(base: type[StateArgs], max_cutoff_day: int):
         __base__=base,
         cutoff_day=(int, Field(
             le=max_cutoff_day,
-            description="相对首次 BPC 癌症诊断的截止日，含当日；允许负数。",
+            description="Inclusive cutoff day relative to the first BPC cancer diagnosis; negative days are allowed.",
         )),
     )
 
@@ -52,7 +52,7 @@ class PatientArtifactStore:
         path = self.directory / f"patient_{kind}_day_{cutoff_day}_{next(self._sequence):03d}.json"
         with path.open("x", encoding="utf-8") as file:
             file.write(text)
-        print(f"已保存：{path}")
+        print(f"Saved: {path}")
         return path
 
 
@@ -62,7 +62,7 @@ class PatientStateTool(Tool[StateArgs]):
     def __init__(self, bound: BoundedPatientTool, store: PatientArtifactStore):
         super().__init__(
             name="get_patient_state",
-            description=f"查询患者 {bound.patient_id} 的已知状态，截止日不得超过 {bound.max_cutoff_day}。",
+            description=f"Retrieve known facts for patient {bound.patient_id}. The cutoff day must not exceed {bound.max_cutoff_day}.",
         )
         self.bound = bound
         self.store = store
@@ -81,8 +81,8 @@ class PatientEvidenceTool(Tool[EvidenceArgs]):
         super().__init__(
             name="get_patient_evidence",
             description=(
-                "查询证据来源及允许公开的字段值；必须使用获取引用时相同的截止日，"
-                f"不得超过 {bound.max_cutoff_day}；不返回完整原始病历。"
+                "Retrieve evidence sources and allowed field values using the same cutoff day as the original references. "
+                f"The cutoff must not exceed {bound.max_cutoff_day}. Full raw medical records are not returned."
             ),
         )
         self.bound = bound

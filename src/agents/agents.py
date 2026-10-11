@@ -17,14 +17,14 @@ from .exceptions import AgentException, ConfigException, LLMException
 
 
 def _reject_constant(value):
-    raise ValueError("JSON 参数不能包含非有限数值")
+    raise ValueError("JSON arguments must not contain non-finite numbers")
 
 
 def _unique_pairs(pairs):
     result = {}
     for key, value in pairs:
         if key in result:
-            raise ValueError("JSON 参数不能包含重复键")
+            raise ValueError("JSON arguments must not contain duplicate keys")
         result[key] = value
     return result
 
@@ -37,9 +37,9 @@ def _decode_arguments(text: str) -> dict:
     try:
         arguments = _ARGUMENT_DECODER.decode(text)
     except (ValueError, RecursionError) as exc:
-        raise ValueError("工具参数必须是完整且合法的 JSON 对象") from exc
+        raise ValueError("Tool arguments must be a complete, valid JSON object") from exc
     if not isinstance(arguments, dict):
-        raise ValueError("工具参数必须是 JSON 对象")
+        raise ValueError("Tool arguments must be a JSON object")
     return arguments
 
 
@@ -97,26 +97,26 @@ class Agent(ABC):
             with (log_dir / f"{name}_{timestamp}.json").open("x", encoding="utf-8") as file:
                 json.dump(data, file, ensure_ascii=False, indent=2)
         except (OSError, ValueError, TypeError) as exc:
-            warnings.warn(f"保存 Agent 历史失败：{exc}", RuntimeWarning, stacklevel=2)
+            warnings.warn(f"Failed to save Agent history: {exc}", RuntimeWarning, stacklevel=2)
     
     def _invoke_response(self, messages, **kwargs) -> LLMResponse:
         """检查响应结构和结束状态，工具调用允许没有文本。"""
         response = self.llm.invoke(messages, **kwargs)
         if not isinstance(response, LLMResponse):
-            raise AgentException("模型必须返回 LLMResponse", code="invalid_response")
+            raise AgentException("The model must return an LLMResponse", code="invalid_response")
         # 先保存已收到的响应，异常结束时也能查看当时的内容。
         message = {"role": "assistant", "content": response.content}
         if response.tool_calls:
             message["tool_calls"] = [call.to_dict() for call in response.tool_calls]
         messages.append(message)
         if response.finish_reason not in {"stop", "tool_calls"}:
-            raise AgentException(f"模型未正常结束: {response.finish_reason}", code="invalid_response")
+            raise AgentException(f"The model did not finish normally: {response.finish_reason}", code="invalid_response")
         if response.tool_calls:
             return response
         if response.finish_reason == "tool_calls":
-            raise AgentException("工具调用结束原因缺少调用列表", code="invalid_response")
+            raise AgentException("The tool_calls finish reason requires a list of tool calls", code="invalid_response")
         if not response.content or not response.content.strip():
-            raise AgentException("模型未返回有效文本", code="empty_response")
+            raise AgentException("The model did not return valid text", code="empty_response")
         return response
 
     def _execute_tool_call(self, call: ToolCall) -> ToolResult:
@@ -126,7 +126,7 @@ class Agent(ABC):
         except ValueError as exc:
             return ToolResult.failure(call.name, "invalid_arguments", str(exc), call_id=call.id)
         if self.tool_registry is None:
-            raise AgentException("未配置工具注册表")
+            raise AgentException("No tool registry is configured")
         return self.tool_registry.execute_tool(call.name, arguments, call_id=call.id)
 
     def _run_with_tools(self, messages: list, input: str, max_tool_iterations: int, **kwargs) -> AgentResult:
@@ -146,11 +146,11 @@ class Agent(ABC):
     def _run_tool_loop(self, messages: list, input: str, max_tool_iterations: int, **kwargs) -> str:
         """共享原生工具循环；每轮请求一次模型，全部结果配对后才进入下一轮。"""
         if "tools" in kwargs:
-            raise ConfigException("Agent 的 tools 必须来自工具注册表")
+            raise ConfigException("Agent tools must come from the tool registry")
         enabled = getattr(self, "enable_tool_calling", True)
         tools = self.tool_registry.to_openai_tools() if enabled and self.tool_registry else []
         if not tools and {"tool_choice", "parallel_tool_calls"}.intersection(kwargs):
-            raise ConfigException("工具选择参数需要已启用的非空工具注册表")
+            raise ConfigException("Tool selection parameters require an enabled, nonempty tool registry")
         options = {**kwargs, "tools": tools} if tools else kwargs
         for _ in range(max_tool_iterations):
             response = self._invoke_response(messages, **options)
@@ -161,12 +161,12 @@ class Agent(ABC):
                 self.add_message(Message(response.content, "assistant"))
                 return response.content
             if not tools:
-                raise AgentException("未启用工具却收到工具调用", code="invalid_response")
+                raise AgentException("Received tool calls while tools were disabled", code="invalid_response")
             # LLMResponse 已校验整批调用，assistant 消息已在响应入口保存。
             for call in response.tool_calls:
                 result = self._execute_tool_call(call)
                 messages.append(Message(result.model_dump_json(), "tool", tool_call_id=call.id).to_dict())
-        raise AgentException("已达到模型交互轮次上限，尚未获得最终回答", code="step_limit_exceeded")
+        raise AgentException("Model iteration limit reached before a final response was received", code="step_limit_exceeded")
 
     def __str__(self) -> str:
         return f"Agent(name={self.name}, model={self.llm.model})"
@@ -191,7 +191,7 @@ class BasicAgent(Agent):
         super().__init__(name, llm, sys_prompt, config)
         self.tool_registry = tool_registry
         self.enable_tool_calling = enable_tool_calling and tool_registry is not None
-        print(f"✅ Agent {name} 初始化完成，工具调用: {'启用' if self.enable_tool_calling else '禁用'}")
+        print(f"✅ Agent {name} initialized; tool calling: {'enabled' if self.enable_tool_calling else 'disabled'}")
 
     def run(self, input: str, max_tool_iterations: Optional[int] = None, **kwargs) -> AgentResult:
         """
@@ -201,7 +201,7 @@ class BasicAgent(Agent):
             self.config, overrides={"max_tool_iterations": max_tool_iterations}, environ={}
         )
         max_tool_iterations = run_config.max_tool_iterations
-        print(f"🤖 {self.name} 正在解决问题: {input}")
+        print(f"🤖 {self.name} is processing: {input}")
 
         # 构建消息列表并添加系统消息
         messages = []
@@ -223,7 +223,7 @@ class BasicAgent(Agent):
         获取系统消息
         """
         # 构造基础消息
-        base_prompt = self.sys_prompt or "You are a helpful AI assistant."
+        base_prompt = self.sys_prompt or "You are a helpful AI assistant. Respond in English."
 
         return base_prompt
     
@@ -231,9 +231,9 @@ class BasicAgent(Agent):
         """
         流式运行
         """
-        print(f"🌊 {self.name} 开始流式处理: {input}")
+        print(f"🌊 {self.name} is streaming: {input}")
         if self.enable_tool_calling and self.tool_registry and self.tool_registry.list_tools():
-            raise ConfigException("流式入口仅支持普通文本，工具调用请使用 run")
+            raise ConfigException("The streaming interface supports plain text only; use run for tool calls")
 
         # 获取消息
         messages = []
@@ -251,7 +251,7 @@ class BasicAgent(Agent):
                 yield chunk
 
             if not full_response.strip():
-                raise AgentException("empty_response: 模型未返回有效文本")
+                raise AgentException("empty_response: The model did not return valid text")
             # 保存到历史记录
             self.add_message(Message(input, "user"))
             self.add_message(Message(full_response, "assistant"))
@@ -268,7 +268,7 @@ class BasicAgent(Agent):
             self.enable_tool_calling = True
 
         self.tool_registry.register_tool(tool)
-        print(f"🔧 工具 '{tool.name}' 已添加至 Agent {self.name} 中")
+        print(f"🔧 Tool '{tool.name}' added to Agent {self.name}")
 
     def has_tools(self) -> bool:
         """检查是否有可用工具"""
@@ -278,7 +278,7 @@ class BasicAgent(Agent):
         """移除工具"""
         if self.tool_registry:
             self.tool_registry.unregister_tool(name)
-            print(f"🔧 工具 '{name}' 已从 Agent {self.name} 中移除")
+            print(f"🔧 Tool '{name}' removed from Agent {self.name}")
 
     def list_tools(self) -> list:
         """列出所有可用工具"""
@@ -289,9 +289,9 @@ class BasicAgent(Agent):
 
 # ReAct 的策略提示；工具和观察结果通过原生消息提供。
 REACT_PROMPT_TEMPLATE = """
-分析任务所需的信息，按需调用提供的工具。
-结合工具的实际返回结果决定继续调用还是回答；不要编造工具结果。
-信息充分时直接给出最终回答，执行失败时根据错误信息修正参数或说明限制。
+Identify the information required for the task and call the available tools as needed.
+Use actual tool results to decide whether to make further calls or respond. Do not fabricate tool results.
+When enough information is available, provide the final response in English. On failure, correct the arguments using the error details or explain the limitation in English.
 """
 
 class ReActAgent(Agent):
@@ -323,12 +323,12 @@ class ReActAgent(Agent):
             self.config = Config.resolve(self.config, overrides={"max_steps": max_steps}, environ={})
         self.max_steps = self.config.max_steps
         self.current_history: list[dict] = []
-        print(f"✅ ReAct Agent {name} 初始化完成，最大步数: {self.max_steps}")
+        print(f"✅ ReAct Agent {name} initialized; maximum steps: {self.max_steps}")
 
     def run(self, input: str, **kwargs) -> AgentResult:
         """建立本次消息历史，使用共享原生工具循环完成推理与行动。"""
         self.current_history = []
-        print(f"\n🤖 ReAct Agent {self.name} 开始处理问题: {input}")
+        print(f"\n🤖 ReAct Agent {self.name} is processing: {input}")
         prompt = "\n\n".join(part for part in (self.sys_prompt, self.prompt_template) if part)
         self.current_history.append(Message(prompt, "system").to_dict())
         self.current_history.append(Message(input, "user").to_dict())

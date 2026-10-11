@@ -36,7 +36,7 @@ class MyLLM:
                 overrides[name] = value
         self._check_request_options(kwargs)
         if {"tools", "tool_choice", "parallel_tool_calls"}.intersection(kwargs):
-            raise ConfigException("工具请求参数应在 invoke 时传入，不能作为模型构造默认值")
+            raise ConfigException("Pass tool request parameters to invoke, not as model constructor defaults")
         self.config = Config.resolve(config, overrides=overrides)
         self.config.require_model()
         self._request_defaults = deepcopy(kwargs)
@@ -56,7 +56,7 @@ class MyLLM:
         """拒绝通过请求参数改写连接设置、Agent 配置或接口控制参数。"""
         conflicts = cls._RESERVED_FIELDS.intersection(options)
         if conflicts:
-            raise ConfigException("以下参数不允许作为模型请求覆盖项：" + ", ".join(sorted(conflicts)))
+            raise ConfigException("These parameters cannot be overridden in model requests: " + ", ".join(sorted(conflicts)))
 
     def _build_request_params(self, overrides, *, stream):
         """合并并复制请求参数，校验单次覆盖，不修改原配置或重新读取环境。"""
@@ -64,9 +64,9 @@ class MyLLM:
         options = deepcopy({**self._request_defaults, **overrides})
         extra_body = options.get("extra_body") or {}
         if {"tools", "tool_choice", "parallel_tool_calls", "functions", "function_call"}.intersection(extra_body):
-            raise ConfigException("工具请求参数必须显式传入，不能放在 extra_body 中")
+            raise ConfigException("Pass tool request parameters explicitly, not inside extra_body")
         if {"functions", "function_call"}.intersection(options):
-            raise ConfigException("仅支持 tools 和 tool_choice 工具接口")
+            raise ConfigException("Only the tools and tool_choice interfaces are supported")
         settings = {name: options.pop(name) for name in self._REQUEST_FIELDS if name in options}
         config = Config.resolve(self.config, overrides=settings, environ={})
         options.update(model=config.model, timeout=config.timeout, stream=stream)
@@ -80,22 +80,22 @@ class MyLLM:
         """逐段返回流式文本；配置错误在开始迭代生成器时抛出。"""
         options = self._build_request_params(kwargs, stream=True)
         if {"tools", "tool_choice", "parallel_tool_calls"}.intersection(options):
-            raise ConfigException("think 仅支持文本流，请使用 invoke 执行工具调用")
-        print(f"🧠 正在调用 {self.model} 模型...")
+            raise ConfigException("think supports text streaming only; use invoke for tool calls")
+        print(f"🧠 Calling model {self.model}...")
         try:
             response = self._client.chat.completions.create(messages=messages, **options)
-            print("✅ 大语言模型流式响应成功:")
+            print("✅ LLM streaming response received:")
             for chunk in response:
                 if not chunk.choices:
                     continue
                 choice = chunk.choices[0]
                 if getattr(choice.delta, "tool_calls", None):
-                    raise LLMException("文本流不支持工具调用增量")
+                    raise LLMException("Text streaming does not support tool call deltas")
                 if getattr(choice.delta, "refusal", None):
-                    raise LLMException("模型拒绝了请求")
+                    raise LLMException("The model refused the request")
                 reason = getattr(choice, "finish_reason", None)
                 if reason is not None and reason != "stop":
-                    raise LLMException(f"文本流未正常结束: {reason}")
+                    raise LLMException(f"The text stream did not finish normally: {reason}")
                 content = getattr(chunk.choices[0].delta, "content", None)
                 if not content:
                     continue
@@ -103,8 +103,8 @@ class MyLLM:
                 yield content
             print()
         except Exception as e:
-            print(f"❌ 调用LLM API时发生错误: {e}")
-            raise LLMException(f"LLM流式调用失败: {str(e)}") from e
+            print(f"❌ LLM API call failed: {e}")
+            raise LLMException(f"LLM streaming call failed: {str(e)}") from e
 
     def invoke(self, messages: List[Dict[str, Any]], *, tools=None, tool_choice=None,
                **kwargs) -> LLMResponse:
@@ -114,26 +114,26 @@ class MyLLM:
             if tool_choice is not None:
                 kwargs["tool_choice"] = tool_choice
         elif tool_choice is not None or "parallel_tool_calls" in kwargs:
-            raise ConfigException("工具选择参数需要非空 tools")
+            raise ConfigException("Tool selection parameters require nonempty tools")
         options = self._build_request_params(kwargs, stream=False)
-        print(f"🧠 正在调用 {self.model} 模型...")
+        print(f"🧠 Calling model {self.model}...")
         try:
             response = self._client.chat.completions.create(messages=messages, **options)
-            print("✅ 大语言模型非流式响应成功:")
+            print("✅ LLM response received:")
             if not response.choices:
-                raise LLMException("invalid_response: 模型未返回任何候选响应")
+                raise LLMException("invalid_response: the model returned no response choices")
             choice = response.choices[0]
             message = choice.message
             if getattr(message, "refusal", None):
-                raise LLMException("模型拒绝了请求")
+                raise LLMException("The model refused the request")
             calls = []
             for call in message.tool_calls or []:
                 if call.type != "function":
-                    raise LLMException(f"不支持的工具调用类型: {call.type}")
+                    raise LLMException(f"Unsupported tool call type: {call.type}")
                 calls.append(ToolCall(id=call.id, name=call.function.name,
                                       arguments=call.function.arguments))
             return LLMResponse(content=message.content, tool_calls=calls,
                                finish_reason=choice.finish_reason)
         except Exception as e:
-            print(f"❌ 调用LLM API时发生错误: {e}")
-            raise LLMException(f"LLM非流式调用失败: {str(e)}") from e
+            print(f"❌ LLM API call failed: {e}")
+            raise LLMException(f"LLM call failed: {str(e)}") from e

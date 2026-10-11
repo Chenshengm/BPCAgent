@@ -35,7 +35,7 @@ class LLMResponse(BaseModel):
         """同一响应中的调用 ID 必须唯一。"""
         ids = [call.id for call in self.tool_calls]
         if len(ids) != len(set(ids)):
-            raise ValueError("同一响应中的工具调用 ID 不能重复")
+            raise ValueError("Tool call IDs must be unique within a response")
         return self
 
 
@@ -61,14 +61,14 @@ class Message(BaseModel):
     def validate_role_fields(self):
         """限制调用字段的角色，工具结果必须能够与请求配对。"""
         if self.tool_calls and self.role != "assistant":
-            raise ValueError("只有 assistant 消息可以携带 tool_calls")
+            raise ValueError("Only assistant messages may include tool_calls")
         if (self.role == "tool") != (self.tool_call_id is not None):
-            raise ValueError("只有 tool 消息必须携带 tool_call_id")
+            raise ValueError("tool_call_id is required for tool messages and forbidden for other roles")
         if self.content is None and not (self.role == "assistant" and self.tool_calls):
-            raise ValueError("只有携带工具调用的 assistant 消息可以省略文本")
+            raise ValueError("Only assistant messages with tool calls may omit text")
         ids = [call.id for call in self.tool_calls]
         if len(ids) != len(set(ids)):
-            raise ValueError("同一消息中的工具调用 ID 不能重复")
+            raise ValueError("Tool call IDs must be unique within a message")
         return self
 
     def to_dict(self) -> Dict[str, Any]:

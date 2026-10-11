@@ -10,7 +10,7 @@ from .tool import Tool, ToolArgs
 class CalculatorArgs(ToolArgs):
     """计算器的输入参数。"""
 
-    input: str = Field(min_length=1, pattern=r"\S", description="需要计算的数学表达式")
+    input: str = Field(min_length=1, pattern=r"\S", description="The mathematical expression to evaluate")
 
 
 class CalculatorTool(Tool[CalculatorArgs]):
@@ -49,7 +49,7 @@ class CalculatorTool(Tool[CalculatorArgs]):
     def __init__(self):
         super().__init__(
             name="calculate",
-            description="执行数学计算。支持基本运算、数学函数等。例如：2+3*4, sqrt(16), sin(pi/2)等。"
+            description="Evaluate mathematical expressions with basic operators and mathematical functions, such as 2+3*4, sqrt(16), and sin(pi/2)."
         )
     
     def run(self, parameters: CalculatorArgs) -> int | float:
@@ -57,7 +57,7 @@ class CalculatorTool(Tool[CalculatorArgs]):
         node = ast.parse(parameters.input, mode="eval")
         result = self._eval_node(node.body)
         if type(result) not in (int, float):
-            raise ValueError("表达式必须产生数值结果")
+            raise ValueError("The expression must produce a numeric result")
         return result
 
     def _eval_node(self, node):
@@ -77,11 +77,11 @@ class CalculatorTool(Tool[CalculatorArgs]):
                 args = [self._eval_node(arg) for arg in node.args]
                 return self.FUNCTIONS[func_name](*args)
             else:
-                raise ValueError(f"不支持的函数: {func_name}")
+                raise ValueError(f"Unsupported function: {func_name}")
         elif isinstance(node, ast.Name):
             if node.id in self.FUNCTIONS:
                 return self.FUNCTIONS[node.id]
             else:
-                raise ValueError(f"未定义的变量: {node.id}")
+                raise ValueError(f"Undefined variable: {node.id}")
         else:
-            raise ValueError(f"不支持的表达式类型: {type(node)}")
+            raise ValueError(f"Unsupported expression type: {type(node)}")

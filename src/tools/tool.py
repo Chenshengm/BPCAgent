@@ -23,6 +23,7 @@ class ToolArgs(BaseModel):
 
 
 ArgsT = TypeVar("ArgsT", bound=ToolArgs)
+_ARGUMENT_LOG_MAX_CHARS = 200
 
 
 def _json_data(value: Any) -> Any:
@@ -35,7 +36,7 @@ def _json_data(value: Any) -> Any:
         return [_json_data(item) for item in value]
     if type(value) is dict and all(type(key) is str for key in value):
         return {key: _json_data(item) for key, item in value.items()}
-    raise ValueError("工具结果必须是原生 JSON 数据，数值必须有限，字典键必须为字符串")
+    raise ValueError("Tool results must be native JSON data with finite numbers and string dictionary keys")
 
 
 class ToolError(BaseModel):
@@ -66,9 +67,9 @@ class ToolResult(BaseModel):
     def validate_status(self):
         """禁止成功携带错误或失败携带成功数据。"""
         if self.status == "success" and self.error is not None:
-            raise ValueError("成功结果不能携带错误")
+            raise ValueError("Successful results must not contain an error")
         if self.status == "error" and (self.error is None or self.data is not None):
-            raise ValueError("失败结果必须包含错误，且 data 必须为 None")
+            raise ValueError("Failed results must include an error and data must be None")
         return self
 
     @classmethod
@@ -117,17 +118,17 @@ class FunctionTool(Tool[ArgsT]):
     def __init__(self, name: str, description: str, func: Callable[..., Any], *, args_schema: type[ArgsT]):
         super().__init__(name, description)
         if not isinstance(args_schema, type) or not issubclass(args_schema, ToolArgs):
-            raise ToolException("args_schema 必须是 ToolArgs 的子类")
+            raise ToolException("args_schema must be a subclass of ToolArgs")
         if not callable(func) or inspect.iscoroutinefunction(func) or inspect.isgeneratorfunction(func):
-            raise ToolException("函数工具必须是普通同步函数")
+            raise ToolException("Function tools must be regular synchronous functions")
         try:
             signature = inspect.signature(func)
             if any(param.kind in (param.POSITIONAL_ONLY, param.VAR_POSITIONAL, param.VAR_KEYWORD)
                    for param in signature.parameters.values()):
-                raise ValueError("函数参数必须按名称显式声明")
+                raise ValueError("Function parameters must be explicitly named")
             signature.bind(**dict.fromkeys(args_schema.model_fields))
         except (TypeError, ValueError) as exc:
-            raise ToolException("函数签名必须能接收参数模型的全部字段，且不能缺少必填参数") from exc
+            raise ToolException("The function signature must accept every argument model field and require no additional parameters") from exc
         self.func = func
         self.args_schema = args_schema
 
@@ -145,22 +146,22 @@ class ToolRegistry:
     def register_tool(self, tool: Tool, *, replace: bool = False) -> None:
         """注册工具；名称遵循 OpenAI 函数名称规则，重名必须显式替换。"""
         if not isinstance(tool, Tool):
-            raise ToolException("只能注册 Tool 对象")
+            raise ToolException("Only Tool instances can be registered")
         if not isinstance(tool.name, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", tool.name):
-            raise ToolException("工具名称必须为 1 到 64 个字母、数字、下划线或连字符")
+            raise ToolException("Tool names must contain 1 to 64 letters, digits, underscores, or hyphens")
         schema = getattr(tool, "args_schema", None)
         if not isinstance(schema, type) or not issubclass(schema, ToolArgs):
-            raise ToolException("工具必须声明 ToolArgs 子类作为 args_schema")
+            raise ToolException("Tools must declare a ToolArgs subclass as args_schema")
         if inspect.iscoroutinefunction(tool.run) or inspect.isgeneratorfunction(tool.run):
-            raise ToolException("当前工具入口仅支持同步执行")
+            raise ToolException("The tool interface supports synchronous execution only")
         try:
             tool.to_openai_tool()
         except Exception as exc:
-            raise ToolException("工具参数模型无法生成 JSON Schema") from exc
+            raise ToolException("The tool argument model could not generate a JSON Schema") from exc
         if tool.name in self._tools and not replace:
-            raise ToolException(f"工具 '{tool.name}' 已注册；替换时指定 replace=True")
+            raise ToolException(f"Tool '{tool.name}' is already registered; use replace=True to replace it")
         self._tools[tool.name] = tool
-        print(f"✅ 工具 '{tool.name}' 已注册。")
+        print(f"✅ Tool '{tool.name}' registered.")
 
     def register_function(self, name: str, description: str, func: Callable[..., Any], *,
                           args_schema: type[ToolArgs], replace: bool = False) -> None:
@@ -174,9 +175,9 @@ class ToolRegistry:
     def unregister_tool(self, name: str) -> None:
         """删除工具；名称不存在时不执行额外操作。"""
         if self._tools.pop(name, None) is not None:
-            print(f"🗑️ 工具 '{name}' 已注销。")
+            print(f"🗑️ Tool '{name}' unregistered.")
         else:
-            print(f"⚠️ 工具 '{name}' 不存在。")
+            print(f"⚠️ Tool '{name}' does not exist.")
 
     def list_tools(self) -> list[str]:
         """按注册顺序列出名称。"""
@@ -188,20 +189,20 @@ class ToolRegistry:
 
     def get_descriptions(self) -> str:
         """返回工具定义的 JSON 文本，供展示和检查参数 Schema。"""
-        return json.dumps(self.to_openai_tools(), ensure_ascii=False) if self._tools else "暂无可用工具"
+        return json.dumps(self.to_openai_tools(), ensure_ascii=False) if self._tools else "No tools available"
 
     def execute_tool(self, name: str, arguments: dict[str, Any], *, call_id: str | None = None) -> ToolResult:
         """校验后执行一次；失败不自动重试，结果序列化失败也不会重新执行工具。"""
         identity = call_id if call_id is not None else f"call_{uuid4().hex}"
         if not isinstance(identity, str) or not identity:
-            raise ToolException("call_id 必须是非空字符串")
+            raise ToolException("call_id must be a nonempty string")
         tool = self.get_tool(name)
         if tool is None:
-            print(f"❌ 工具 '{name}' 未注册。")
-            return ToolResult.failure(name, "tool_not_found", f"工具 '{name}' 未注册", call_id=identity)
+            print(f"❌ Tool '{name}' is not registered.")
+            return ToolResult.failure(name, "tool_not_found", f"Tool '{name}' is not registered", call_id=identity)
         if not isinstance(arguments, dict):
-            print(f"❌ 工具 '{name}' 参数必须为 JSON 对象，未执行。")
-            return ToolResult.failure(name, "invalid_arguments", "工具参数必须为 JSON 对象", call_id=identity)
+            print(f"❌ Tool '{name}' requires JSON object arguments; execution skipped.")
+            return ToolResult.failure(name, "invalid_arguments", "Tool arguments must be a JSON object", call_id=identity)
         try:
             parameters = tool.args_schema.model_validate(_json_data(arguments), strict=True)
         except ValidationError as exc:
@@ -209,25 +210,28 @@ class ToolRegistry:
                 f"{'.'.join(map(str, error['loc'])) or 'arguments'}: {error['msg']}"
                 for error in exc.errors(include_input=False, include_url=False, include_context=False)
             )
-            print(f"❌ 工具 '{name}' 参数校验失败，未执行: {details}")
+            print(f"❌ Tool '{name}' argument validation failed; execution skipped: {details}")
             return ToolResult.failure(name, "invalid_arguments", details, call_id=identity)
         except Exception:
-            print(f"❌ 工具 '{name}' 参数校验失败，未执行。")
-            return ToolResult.failure(name, "invalid_arguments", "参数校验失败", call_id=identity)
+            print(f"❌ Tool '{name}' argument validation failed; execution skipped.")
+            return ToolResult.failure(name, "invalid_arguments", "Argument validation failed", call_id=identity)
         try:
-            print(f"🔧 正在执行工具 '{name}'，参数: {parameters}")
+            argument_preview = str(parameters)
+            if len(argument_preview) > _ARGUMENT_LOG_MAX_CHARS:
+                total_chars = len(argument_preview)
+                argument_preview = argument_preview[:_ARGUMENT_LOG_MAX_CHARS] + f"... [truncated; {total_chars} chars total]"
+            print(f"🔧 Executing tool '{name}' with arguments: {argument_preview}")
             data = tool.run(parameters)
             if inspect.isawaitable(data):
                 if inspect.iscoroutine(data):
                     data.close()
-                raise ToolException("当前同步入口不能执行异步工具")
+                raise ToolException("The synchronous interface cannot execute asynchronous tools")
         except Exception as exc:
-            print(f"❌ 工具 '{name}' 执行失败: {exc}")
+            print(f"❌ Tool '{name}' execution failed: {exc}")
             return ToolResult.failure(name, "execution_error", str(exc), call_id=identity)
         try:
             result = ToolResult(call_id=identity, tool_name=name, status="success", data=data)
         except (ValidationError, ValueError, TypeError, RecursionError):
-            print(f"❌ 工具 '{name}' 已执行，但返回值无法序列化。")
-            return ToolResult.failure(name, "serialization_error", "工具已执行，但返回值不是可序列化的原生 JSON 数据", call_id=identity)
-        print(f"✅ 工具 '{name}' 执行结果: {result.data}")
+            print(f"❌ Tool '{name}' executed, but its return value cannot be serialized.")
+            return ToolResult.failure(name, "serialization_error", "The tool executed, but its return value is not serializable native JSON data", call_id=identity)
         return result
