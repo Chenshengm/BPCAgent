@@ -14,6 +14,7 @@
 | 工具类 | 注册名称 | 参数与行为 |
 | --- | --- | --- |
 | `CalculatorTool` | `calculate` | `input`：数学表达式，返回计算结果 |
+| `ShellTool` | `run_shell` | `command`：在固定工作目录执行命令，读取／写入文件并返回退出码、输出和超时信息 |
 | `PatientStateTool` | `get_patient_state` | `cutoff_day`：截止日期，返回患者状态并保存 JSON |
 | `PatientEvidenceTool` | `get_patient_evidence` | `cutoff_day`、`evidence_refs`：返回对应证据并保存 JSON |
 
@@ -49,6 +50,44 @@ else:
 result = registry.execute_tool("calculate", {"input": "2 + 3 * 4"})
 print(result.data if result.status == "success" else result.error)
 ```
+
+## 使用 Shell 工具
+
+`ShellTool` 支持 macOS、Linux，在本机以当前用户权限执行命令。每次启动独立的非交互 shell：文件保留，`cd` 和 `export` 不跨调用保留。工作目录不是沙箱边界，工具不限制网络或目录外访问；实验请使用独立目录和合成数据。
+
+```python
+from pathlib import Path
+from bpcagent import ShellTool, ShellToolConfig, ToolRegistry
+
+work_dir = Path("/tmp/bpc-shell-demo")
+work_dir.mkdir(parents=True, exist_ok=True)
+registry = ToolRegistry()
+registry.register_tool(ShellTool(ShellToolConfig(work_dir=work_dir)))
+result = registry.execute_tool("run_shell", {
+    "command": "printf 'hello\\n' > result.txt\ncat result.txt",
+})
+print(result.data if result.status == "success" else result.error)
+```
+
+应用通过 `ShellToolConfig` 配置 `work_dir`、`shell_path`（默认 `/bin/bash`）、`timeout_seconds`（30 秒）、`termination_grace_seconds`（2 秒）、`max_output_bytes`（每条输出流 32768 字节）和 `env_overrides`。子进程不自动继承模型密钥等主进程环境变量；如需虚拟环境的 Python，请配置 `PATH` 或在命令中使用解释器绝对路径。
+
+结果包含 `exit_code`、`stdout`、`stderr`、`timed_out`、`duration_ms`、`stdout_truncated`、`stderr_truncated` 和 `cwd`。`ToolResult.status="success"` 表示成功取得执行结果，还需检查退出码和超时标记。非零退出码和超时不会触发自动重试，已写入的文件不会回滚。超时清理包括终止宽限期，因此实际耗时可以略长于配置时限。
+
+只保留 stdout、stderr 的前 N 字节，超限部分继续读取但不保留；UTF-8 非法或被截断的字节使用替换字符。需要大量结果时直接写入文件，再按需读取。不要运行交互程序、后台服务或主动脱离进程组的任务。
+
+独立实验复用 `BasicAgent`，不调用 PatientStateAgent：
+
+```bash
+# 模型响应预设，但 shell、脚本和文件读写实际执行；不访问模型服务
+python examples/shell_experiment.py
+
+# 使用 BPCAgent/.env 中的模型配置，真实验证多轮文件处理
+python examples/shell_experiment.py --live
+```
+
+每次创建唯一实验目录（默认系统临时目录，可用 `--work-dir` 指定父目录），保留合成输入、输出和 `agent_result.json`。任务统计空字段，零值不算缺失；示例独立校验输出文件和原输入未变，模型仅声称完成不会通过。Agent 调用轨迹还会按现有机制写入 `log/`。
+
+运行离线测试：`python -B -m unittest discover -s tests -v`。
 
 ## 使用患者数据提取智能体
 

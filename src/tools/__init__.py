@@ -2,8 +2,11 @@
 
 from .tool import FunctionTool, Tool, ToolArgs, ToolError, ToolRegistry, ToolResult
 from .calculator import CalculatorArgs, CalculatorTool
+from .shell import ShellArgs, ShellTool, ShellToolConfig
+from .shell import ShellArgs, ShellTool, ShellToolConfig
 
 __all__ = [
     "Tool", "ToolArgs", "FunctionTool", "ToolError", "ToolResult", "ToolRegistry",
     "CalculatorArgs", "CalculatorTool",
+    "ShellArgs", "ShellTool", "ShellToolConfig",
 ]
