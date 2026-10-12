@@ -108,7 +108,7 @@ class MyLLM:
 
     def invoke(self, messages: List[Dict[str, Any]], *, tools=None, tool_choice=None,
                **kwargs) -> LLMResponse:
-        """返回文本、原生工具调用和结束原因，不在模型层执行工具。"""
+        """返回文本、可选推理内容、原生工具调用和结束原因，不执行工具。"""
         if tools:
             kwargs["tools"] = tools
             if tool_choice is not None:
@@ -133,6 +133,7 @@ class MyLLM:
                 calls.append(ToolCall(id=call.id, name=call.function.name,
                                       arguments=call.function.arguments))
             return LLMResponse(content=message.content, tool_calls=calls,
+                               reasoning_content=getattr(message, "reasoning_content", None),
                                finish_reason=choice.finish_reason)
         except Exception as e:
             print(f"❌ LLM API call failed: {e}")

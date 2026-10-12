@@ -106,6 +106,9 @@ class Agent(ABC):
             raise AgentException("The model must return an LLMResponse", code="invalid_response")
         # 先保存已收到的响应，异常结束时也能查看当时的内容。
         message = {"role": "assistant", "content": response.content}
+        # 思考模式的后续工具请求需要回传供应商返回的推理内容。
+        if response.reasoning_content is not None:
+            message["reasoning_content"] = response.reasoning_content
         if response.tool_calls:
             message["tool_calls"] = [call.to_dict() for call in response.tool_calls]
         messages.append(message)
@@ -158,7 +161,8 @@ class Agent(ABC):
             # print(response.content if not response.tool_calls else response)
             if not response.tool_calls:
                 self.add_message(Message(input, "user"))
-                self.add_message(Message(response.content, "assistant"))
+                self.add_message(Message(response.content, "assistant",
+                                         reasoning_content=response.reasoning_content))
                 return response.content
             if not tools:
                 raise AgentException("Received tool calls while tools were disabled", code="invalid_response")

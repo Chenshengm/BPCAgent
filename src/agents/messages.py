@@ -27,6 +27,7 @@ class LLMResponse(BaseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True)
     content: Optional[str] = None
+    reasoning_content: Optional[str] = None
     tool_calls: list[ToolCall] = Field(default_factory=list)
     finish_reason: str
 
@@ -45,6 +46,7 @@ class Message(BaseModel):
     """
     content: Optional[str]
     role: MessageRole
+    reasoning_content: Optional[str] = None
     timestamp: datetime = Field(default_factory=datetime.now)
     metadata: Optional[Dict[str, Any]] = None
     tool_calls: list[ToolCall] = Field(default_factory=list)
@@ -60,6 +62,8 @@ class Message(BaseModel):
     @model_validator(mode="after")
     def validate_role_fields(self):
         """限制调用字段的角色，工具结果必须能够与请求配对。"""
+        if self.reasoning_content is not None and self.role != "assistant":
+            raise ValueError("Only assistant messages may include reasoning_content")
         if self.tool_calls and self.role != "assistant":
             raise ValueError("Only assistant messages may include tool_calls")
         if (self.role == "tool") != (self.tool_call_id is not None):
@@ -79,6 +83,9 @@ class Message(BaseModel):
             "role": self.role,
             "content": self.content
         }
+        # 保留供应商原文（包括空字符串），未提供时不发送扩展字段。
+        if self.reasoning_content is not None:
+            result["reasoning_content"] = self.reasoning_content
         if self.tool_calls:
             result["tool_calls"] = [call.to_dict() for call in self.tool_calls]
         if self.tool_call_id is not None:

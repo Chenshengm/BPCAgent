@@ -65,6 +65,23 @@ class PatientStateAgentTests(unittest.TestCase):
         self.assertEqual(result.info["stop_reason"], "incomplete_extraction")
         self.assertEqual(list(self.directory.iterdir()), [])
 
+    def test_extraction_preserves_reasoning_between_tool_calls(self):
+        state = state_response().model_copy(update={"reasoning_content": "先提取 state。"})
+        evidence = evidence_response().model_copy(update={"reasoning_content": "再提取 evidence。"})
+
+        def invoke(messages, **kwargs):
+            if self.llm.invoke.call_count == 1:
+                return state
+            self.assertEqual(messages[-2]["reasoning_content"], state.reasoning_content)
+            return evidence
+
+        self.llm.invoke.side_effect = invoke
+        result = self.agent.run()
+        self.assertTrue(result.finished)
+        self.assertEqual([m["reasoning_content"] for m in result.transcript
+                          if m["role"] == "assistant"],
+                         [state.reasoning_content, evidence.reasoning_content])
+
     def test_failed_tool_can_be_corrected_before_completion(self):
         self.bound.get_evidence.side_effect = [OSError("write failed"), {"E-test": {}}]
         self.llm.invoke.side_effect = [state_response(), evidence_response(), evidence_response()]

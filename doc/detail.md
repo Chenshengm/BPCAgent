@@ -173,6 +173,10 @@ else:
 
 ### Agent 运行结果
 
+非流式 `MyLLM.invoke()` 会将供应商返回的可选 `reasoning_content` 原样保存在 `LLMResponse` 中。Agent 将其写入 assistant 消息、`transcript` 和日志，并随消息回传给后续模型请求；最终回答的该字段也保留在 `_history` 中。未返回或为 `None` 时不向 API 添加该字段，空字符串则原样保留。`Message` 仅允许 assistant 消息携带非空值或空字符串形式的 `reasoning_content`。
+
+该字段不会替代 `content`、触发工具执行或作为完成依据，也不会自动开启供应商的思考模式。纯文本流式入口 `think()` / `run_using_stream()` 目前仍只处理 `content`。
+
 `BasicAgent.run()` 和 `ReActAgent.run()` 统一返回 `AgentResult`，可通过 `from bpcagent import AgentResult` 导入。
 
 | 字段 | 当前约定 |

@@ -1,11 +1,15 @@
 """Check the model adapter without making any network requests."""
 
 from types import SimpleNamespace
+from copy import deepcopy
+import json
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 import os
 from unittest.mock import patch
 
-from bpcagent import BasicAgent, Config, MyLLM, LLMResponse
+from bpcagent import BasicAgent, CalculatorTool, Config, MyLLM, LLMResponse, ReActAgent, ToolRegistry
 from bpcagent.agents.exceptions import ConfigException, LLMException
 
 
@@ -28,6 +32,69 @@ class LLMTests(unittest.TestCase):
     def test_invoke_returns_response_text(self):
         self.assertEqual(self.llm.invoke([{"role": "user", "content": "hi"}]),
                          LLMResponse(content="hello", finish_reason="stop"))
+
+    def test_invoke_preserves_optional_reasoning(self):
+        for reasoning in (None, "", "先检查工具结果。\n再回答。"):
+            with self.subTest(reasoning=reasoning):
+                response = text_response()
+                response.choices[0].message.reasoning_content = reasoning
+                self.client.chat.completions.create.return_value = response
+                result = self.llm.invoke([])
+                self.assertEqual(result.reasoning_content, reasoning)
+                self.assertEqual(result.content, "hello")
+
+    def test_reasoning_survives_tools_logs_and_followup_history(self):
+        # 使用实际 SDK 响应类型验证供应商扩展字段；SDK 请求本身被 mock。
+        from openai.types.chat import ChatCompletion
+
+        def response(reasoning, call_id=None, arguments=None):
+            message = {"role": "assistant", "content": None if call_id else "6",
+                       "reasoning_content": reasoning}
+            if call_id:
+                message["tool_calls"] = [{"id": call_id, "type": "function", "function": {
+                    "name": "calculate", "arguments": arguments}}]
+            return ChatCompletion.model_validate({
+                "id": "test", "created": 0, "model": "test", "object": "chat.completion",
+                "choices": [{"index": 0, "message": message,
+                             "finish_reason": "tool_calls" if call_id else "stop"}],
+            })
+
+        for cls in (BasicAgent, ReActAgent):
+            with self.subTest(agent=cls.__name__), TemporaryDirectory() as directory:
+                responses = iter([
+                    response("先相加。\n", "call_1", '{"input":"1+1"}'),
+                    response("", "call_2", '{"input":"2*3"}'),
+                    response("工具结果为 6。"),
+                    response("继续回答。"),
+                ])
+                requests = []
+
+                def create(**kwargs):
+                    requests.append(deepcopy(kwargs))
+                    return next(responses)
+
+                self.client.chat.completions.create.side_effect = create
+                registry = ToolRegistry()
+                registry.register_tool(CalculatorTool())
+                agent = cls("reasoning", self.llm, tool_registry=registry)
+                # 仅将日志写入临时目录，不在仓库留下测试产物。
+                with patch("bpcagent.agents.agents.Path", return_value=Path(directory)):
+                    result = agent.run("计算 (1+1)*3")
+                    self.assertTrue(result.finished)
+                    self.assertEqual(result.output, {"text": "6"})
+                    expected = ["先相加。\n", "", "工具结果为 6。"]
+                    self.assertEqual([m["reasoning_content"] for m in result.transcript
+                                      if m["role"] == "assistant"], expected)
+                    self.assertEqual(requests[1]["messages"][-2]["reasoning_content"], expected[0])
+                    self.assertEqual([m["reasoning_content"] for m in requests[2]["messages"]
+                                      if m["role"] == "assistant"], expected[:2])
+                    self.assertEqual(requests[2]["messages"][-1]["tool_call_id"], "call_2")
+                    log = json.loads(next(Path(directory).glob("*.json")).read_text())
+                    self.assertEqual(log["transcript"], result.transcript)
+                    self.assertEqual(log["history"][-1]["reasoning_content"], expected[-1])
+                    agent.run("再确认一次")
+                    if cls is BasicAgent:
+                        self.assertEqual(requests[3]["messages"][-2]["reasoning_content"], expected[-1])
 
     def test_invoke_failure_raises_llm_exception(self):
         self.client.chat.completions.create.side_effect = RuntimeError("offline failure")

@@ -28,6 +28,19 @@ class MessageTests(unittest.TestCase):
             with self.subTest(role=role, kwargs=kwargs), self.assertRaises(ValidationError):
                 Message(content, role, **kwargs)
 
+    def test_reasoning_is_optional_and_preserved_only_on_assistant(self):
+        for reasoning in (None, "", "先检查输入单位。\n保留原始值。"):
+            with self.subTest(reasoning=reasoning):
+                message = Message(None, "assistant", tool_calls=[self.call],
+                                  reasoning_content=reasoning)
+                restored = Message.model_validate_json(message.model_dump_json())
+                self.assertEqual(restored.reasoning_content, reasoning)
+                self.assertEqual(restored.to_dict().get("reasoning_content"), reasoning)
+                self.assertEqual("reasoning_content" in restored.to_dict(), reasoning is not None)
+        for role, kwargs in (("user", {}), ("system", {}), ("tool", {"tool_call_id": "call_1"})):
+            with self.subTest(role=role), self.assertRaises(ValidationError):
+                Message("text", role, reasoning_content="reason", **kwargs)
+
     def test_call_ids_and_argument_types(self):
         for change in ({"id": ""}, {"id": " "}, {"name": ""}, {"arguments": {}}):
             with self.subTest(change=change), self.assertRaises(ValidationError):
