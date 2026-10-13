@@ -10,6 +10,7 @@
 | --- | --- | --- |
 | `BasicAgent` | 通用问答与工具调用，保留对话历史 | `agent.run("Task")` |
 | `PatientStateAgent` | 提取并保存指定患者、截止日期的状态与证据，完成后直接停止，不生成模型分析 | `agent.run()` |
+| `UnitPatientStateAgent` | 先提取状态与证据，再通过 Shell 统一肿瘤标志物单位，独立验收通过后返回英文处理报告 | `agent.run()` |
 
 | 工具类 | 注册名称 | 参数与行为 |
 | --- | --- | --- |
@@ -122,6 +123,28 @@ else:
 智能体先调用 `get_patient_state`，再使用返回的证据引用调用 `get_patient_evidence`，两者使用指定的同一截止日期。成功提取状态与至少一项证据后，程序直接返回完成状态；这不代表导出了全部证据。
 
 工具自动在 `work_dir` 保存 `patient_state_day_220_001.json`、`patient_evidence_day_220_002.json` 等文件，序号随保存递增，不创建 `answer.json`。Agent 调用日志另存于当前运行目录的 `log/`。
+
+### 提取并统一单位
+
+`UnitPatientStateAgent` 继承 `PatientStateAgent`，使用相同的构造参数。它需要在 WSL、Linux 或 macOS 下运行；复用上例的环境配置和路径即可创建：
+
+```python
+from bpcagent import UnitPatientStateAgent
+
+agent = UnitPatientStateAgent(
+    patient_id="GENIE-DFCI-051542",
+    cutoff_day=220,
+    data_dir=pathway / "dataset",
+    rules_path=pathway / "config" / "field_rules.json",
+    work_dir=root / "workspace" / f"run_{uuid4().hex}",
+    config=Config(max_tool_iterations=10),
+)
+result = agent.run()
+print(result.output["text"] if result.finished else result.info)
+print("Full log:", agent.log_path)
+```
+
+两个阶段各自使用 `max_tool_iterations` 轮次上限。标准化结果保存为 `tumor_markers_standardized.json`，保留原始字段，仅新增 `normalization`；无法转换的记录标记为 `unresolved` 并附英文原因。验收失败会反馈模型继续修正，日志保存为 `log/UnitPatientStateAgent_*.json`，包含验收记录和最终完成状态。代码见 [unit_patient_state.py](src/agents/unit_patient_state.py)。
 
 ### 单独调用患者工具
 

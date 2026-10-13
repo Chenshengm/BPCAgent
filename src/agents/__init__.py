@@ -7,9 +7,10 @@ from .models import MyLLM
 from .result import AgentResult
 from .agents import Agent, BasicAgent, ReActAgent
 from .patient_state import PatientStateAgent
+from .unit_patient_state import UnitPatientStateAgent
 
 __all__ = [
     "Agent", "AgentResult", "BasicAgent", "ReActAgent", "PatientStateAgent", "Config", "MyLLM",
-    "Message", "LLMResponse", "ToolCall",
+    "UnitPatientStateAgent", "Message", "LLMResponse", "ToolCall",
     "BasicException", "AgentException", "ConfigException", "LLMException", "ToolException",
 ]

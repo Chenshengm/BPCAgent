@@ -1,7 +1,7 @@
 """Public API for BPCAgent."""
 
 from .agents import Agent, AgentResult, BasicAgent, ReActAgent, Config, LLMResponse, Message, ToolCall, MyLLM
-from .agents import PatientStateAgent
+from .agents import PatientStateAgent, UnitPatientStateAgent
 from .tools import CalculatorTool, FunctionTool, Tool, ToolArgs, ToolError, ToolRegistry, ToolResult
 from .tools import ShellArgs, ShellTool, ShellToolConfig
 from .tools import ShellArgs, ShellTool, ShellToolConfig
@@ -11,6 +11,7 @@ __all__ = [
     "AgentResult",
     "BasicAgent",
     "PatientStateAgent",
+    "UnitPatientStateAgent",
     "CalculatorTool",
     "ShellArgs",
     "ShellTool",
