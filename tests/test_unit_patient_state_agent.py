@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from bpcagent import Config, LLMResponse, ToolCall, UnitPatientStateAgent
+from bpcagent import Config, LLMResponse, SandboxConfig, SandboxError, ToolCall, UnitPatientStateAgent
 from bpcagent.agents import UnitPatientStateAgent as ExportedAgent
 from bpcagent.tools.bpc_patient import PatientArtifactStore, PatientEvidenceTool, PatientStateTool
 
@@ -137,6 +137,21 @@ class UnitPatientStateAgentTests(unittest.TestCase):
         self.assertEqual(result.info["validation_status"], "not_run")
         self.assertEqual(self.llm.invoke.call_count, 1)
         self.assertFalse((self.work_dir / "tumor_markers_standardized.json").exists())
+
+    def test_sandbox_preflight_failure_logs_and_never_calls_model(self):
+        self.agent.sandbox_config = SandboxConfig()
+        for name in ("input", "scripts", "output", "tmp"):
+            (self.work_dir / name).mkdir()
+        with patch("bpcagent.agents.unit_patient_state.DockerSandbox.check_available",
+                   side_effect=SandboxError("Image is missing")):
+            result = self.agent.run()
+        self.assertFalse(result.finished)
+        self.assertEqual(result.info["stop_reason"], "sandbox_error")
+        self.llm.invoke.assert_not_called()
+        log = json.loads(self.agent.log_path.read_text())
+        self.assertFalse(log["finished"])
+        self.assertEqual(log["sandbox"]["backend"], "docker")
+        self.assertEqual(log["sandbox"]["active_containers"], [])
 
 
 if __name__ == "__main__":

@@ -126,7 +126,7 @@ else:
 
 ### 提取并统一单位
 
-`UnitPatientStateAgent` 继承 `PatientStateAgent`，使用相同的构造参数。它需要在 WSL、Linux 或 macOS 下运行；复用上例的环境配置和路径即可创建：
+`UnitPatientStateAgent` 继承 `PatientStateAgent`，支持相同的患者构造参数。它需要在 WSL、Linux 或 macOS 下运行；复用上例的环境配置和路径即可创建：
 
 ```python
 from bpcagent import UnitPatientStateAgent
@@ -145,6 +145,8 @@ print("Full log:", agent.log_path)
 ```
 
 两个阶段各自使用 `max_tool_iterations` 轮次上限。标准化结果保存为 `tumor_markers_standardized.json`，保留原始字段，仅新增 `normalization`；无法转换的记录标记为 `unresolved` 并附英文原因。验收失败会反馈模型继续修正，日志保存为 `log/UnitPatientStateAgent_*.json`，包含验收记录和最终完成状态。代码见 [unit_patient_state.py](src/agents/unit_patient_state.py)。
+
+如需隔离执行，额外传入 `sandbox_config=SandboxConfig(image="bpcagent-sandbox:0.1")`（从 `bpcagent` 导入 `SandboxConfig`）。需先启动本机 Docker 并构建镜像。此模式中 `work_dir` 参数是整个任务目录：提取文件位于 `input/`，脚本位于 `scripts/`，标准化结果位于 `output/`，临时文件位于 `tmp/`。输入对容器只读，每次 shell 调用使用独立的无网络容器。详见 [sandbox 配置、构建和测试说明](doc/sandbox.md)。未传入配置时保留本地执行方式；sandbox 失败不会退回本地执行。
 
 ### 单独调用患者工具
 
