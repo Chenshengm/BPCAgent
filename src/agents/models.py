@@ -12,7 +12,7 @@ from .messages import LLMResponse, ToolCall
 _UNSET = object()
 
 
-class MyLLM:
+class LLM:
     """模型客户端，显式构造参数优先于 Config 和环境变量。"""
 
     _REQUEST_FIELDS = {"temperature", "max_tokens", "timeout"}

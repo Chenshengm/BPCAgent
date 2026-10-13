@@ -10,7 +10,7 @@ import warnings
 
 from .config import Config
 from .messages import LLMResponse, Message, ToolCall
-from .models import MyLLM
+from .models import LLM
 from .result import AgentResult
 from ..tools import ToolRegistry, ToolResult
 from .exceptions import AgentException, ConfigException, LLMException
@@ -50,7 +50,7 @@ class Agent(ABC):
     def __init__(
         self, 
         name: str, 
-        llm: Optional[MyLLM] = None,
+        llm: Optional[LLM] = None,
         sys_prompt: Optional[str] = None, 
         config: Optional[Config] = None    
     ):
@@ -58,7 +58,7 @@ class Agent(ABC):
         self.name = name
         self.sys_prompt = sys_prompt
         if llm is None:
-            self.llm = MyLLM(config=config)
+            self.llm = LLM(config=config)
             # 模型已完成配置解析，Agent 复用同一快照。
             self.config = self.llm.config
         else:
@@ -183,7 +183,7 @@ class BasicAgent(Agent):
     def __init__(
         self, 
         name: str,
-        llm: Optional[MyLLM] = None,
+        llm: Optional[LLM] = None,
         sys_prompt: Optional[str] = None,
         config: Optional[Config] = None,
         tool_registry: Optional['ToolRegistry'] = None,
@@ -305,7 +305,7 @@ class ReActAgent(Agent):
     def __init__(
         self, 
         name: str,
-        llm: Optional[MyLLM] = None,
+        llm: Optional[LLM] = None,
         sys_prompt: Optional[str] = None,
         config: Optional[Config] = None,
         tool_registry: Optional[ToolRegistry] = None,

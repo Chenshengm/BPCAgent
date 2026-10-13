@@ -6,7 +6,7 @@ import json
 import unittest
 from unittest.mock import Mock, patch
 
-from bpcagent import BasicAgent, ReActAgent, CalculatorTool, Config, MyLLM, ToolRegistry
+from bpcagent import BasicAgent, ReActAgent, CalculatorTool, Config, LLM, ToolRegistry
 from bpcagent.agents.exceptions import AgentException, ConfigException, LLMException
 
 
@@ -26,7 +26,7 @@ class NativeToolTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.config = Config.resolve(environ={}, overrides={
             "model": "test", "api_key": "test-key", "base_url": "https://example.invalid/v1"})
-        self.llm = MyLLM(config=self.config)
+        self.llm = LLM(config=self.config)
 
     def test_both_agents_execute_real_calculator_and_pair_messages(self):
         for cls in (BasicAgent, ReActAgent):

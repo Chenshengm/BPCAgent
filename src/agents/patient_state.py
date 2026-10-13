@@ -7,7 +7,7 @@ from .agents import BasicAgent
 from .config import Config
 from .exceptions import AgentException, ConfigException
 from .messages import Message
-from .models import MyLLM
+from .models import LLM
 from .result import AgentResult
 from ..tools import ToolRegistry
 from ..tools.bpc_patient import create_patient_tools
@@ -26,7 +26,7 @@ class PatientStateAgent(BasicAgent):
         rules_path: str | Path | None = None,
         cancer_id: str | None = None,
         config: Config | None = None,
-        llm: MyLLM | None = None,
+        llm: LLM | None = None,
     ):
         self.patient_id = patient_id
         self.cutoff_day = cutoff_day

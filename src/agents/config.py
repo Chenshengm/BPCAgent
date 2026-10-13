@@ -93,7 +93,7 @@ class Config(BaseModel):
             if "api_key" not in missing:
                 missing.append("api_key")
         if missing:
-            raise ConfigException("Missing configuration for MyLLM: " + ", ".join(missing))
+            raise ConfigException("Missing configuration for LLM: " + ", ".join(missing))
 
     def to_dict(self) -> dict[str, Any]:
         """返回 JSON 兼容的配置字典，密钥使用掩码，仅供展示和诊断。"""

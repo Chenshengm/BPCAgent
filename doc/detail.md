@@ -29,7 +29,7 @@ BPCAgent/
     │   ├── agents.py       # Agent、BasicAgent、ReActAgent
     │   ├── patient_state.py # PatientStateAgent，仅执行患者数据提取
     │   ├── result.py       # AgentResult 运行产物与记录
-    │   ├── models.py       # MyLLM 模型接口
+    │   ├── models.py       # LLM 模型接口
     │   ├── messages.py     # Message、ToolCall、LLMResponse
     │   ├── config.py       # Config
     │   └── exceptions.py   # 框架异常
@@ -47,7 +47,7 @@ BPCAgent/
 可从子包导入，也可使用顶层公共接口：
 
 ```python
-from bpcagent.agents import BasicAgent, Config, MyLLM
+from bpcagent.agents import BasicAgent, Config, LLM
 from bpcagent.tools import CalculatorTool, ToolRegistry
 from bpcagent.agents.exceptions import AgentException
 ```
@@ -173,7 +173,7 @@ else:
 
 ### Agent 运行结果
 
-非流式 `MyLLM.invoke()` 会将供应商返回的可选 `reasoning_content` 原样保存在 `LLMResponse` 中。Agent 将其写入 assistant 消息、`transcript` 和日志，并随消息回传给后续模型请求；最终回答的该字段也保留在 `_history` 中。未返回或为 `None` 时不向 API 添加该字段，空字符串则原样保留。`Message` 仅允许 assistant 消息携带非空值或空字符串形式的 `reasoning_content`。
+非流式 `LLM.invoke()` 会将供应商返回的可选 `reasoning_content` 原样保存在 `LLMResponse` 中。Agent 将其写入 assistant 消息、`transcript` 和日志，并随消息回传给后续模型请求；最终回答的该字段也保留在 `_history` 中。未返回或为 `None` 时不向 API 添加该字段，空字符串则原样保留。`Message` 仅允许 assistant 消息携带非空值或空字符串形式的 `reasoning_content`。
 
 该字段不会替代 `content`、触发工具执行或作为完成依据，也不会自动开启供应商的思考模式。纯文本流式入口 `think()` / `run_using_stream()` 目前仍只处理 `content`。
 
@@ -219,7 +219,7 @@ else:
 模型参数从高到低的优先级：
 
 1. 单次 `invoke()` / `think()` 参数（`temperature`、`max_tokens`、`timeout`）。
-2. `MyLLM(...)` 显式构造参数。
+2. `LLM(...)` 显式构造参数。
 3. 传入 `Config` 中显式设置的字段。
 4. 进程环境变量（应用可先用 `load_dotenv(..., override=False)` 加载 `.env`）。
 5. `Config` 默认值。
@@ -228,7 +228,7 @@ else:
 # 只指定 max_tokens，temperature 仍可来自环境变量。
 partial = Config(max_tokens=500)
 config = Config.resolve(partial)
-llm = MyLLM(config=config, timeout=60)
+llm = LLM(config=config, timeout=60)
 response = llm.invoke(
     [{"role": "user", "content": "你好"}],
     temperature=None,  # 本次不发送 temperature
@@ -247,13 +247,13 @@ config = Config.resolve(overrides={"max_tokens": 500})
 updated = Config.resolve(config, overrides={"max_steps": 8}, environ={})
 ```
 
-`environ=None`（默认）读取进程环境；`environ={}` 禁用环境读取；也可以传入自定义环境字典用于测试。完整快照再次传入 `MyLLM` 或 Agent 时保留已解析的值；单次模型调用不会重新读取环境，也不会修改原配置。
+`environ=None`（默认）读取进程环境；`environ={}` 禁用环境读取；也可以传入自定义环境字典用于测试。完整快照再次传入 `LLM` 或 Agent 时保留已解析的值；单次模型调用不会重新读取环境，也不会修改原配置。
 
-测试或完全离线运行时使用 `Config.resolve(environ={})` 排除环境变量影响。仅使用模拟模型的 Agent 无需配置密钥；真实 `MyLLM` 在创建 SDK 客户端前检查模型名、密钥和服务地址。
+测试或完全离线运行时使用 `Config.resolve(environ={})` 排除环境变量影响。仅使用模拟模型的 Agent 无需配置密钥；真实 `LLM` 在创建 SDK 客户端前检查模型名、密钥和服务地址。
 
 ### Agent 与模型如何共享配置
 
-默认使用 `BasicAgent(name="Assistant", config=config)`。Agent 内部创建 `MyLLM(config=config)`，由模型解析环境变量与显式配置，随后 Agent 复用同一份配置快照。初始化阶段只创建客户端，调用 `run()` 时才请求模型。也可以省略 `config`，直接从环境变量与默认值创建模型。
+默认使用 `BasicAgent(name="Assistant", config=config)`。Agent 内部创建 `LLM(config=config)`，由模型解析环境变量与显式配置，随后 Agent 复用同一份配置快照。初始化阶段只创建客户端，调用 `run()` 时才请求模型。也可以省略 `config`，直接从环境变量与默认值创建模型。
 
 连接字段需显式设置或存在于进程环境中；`.env` 仍由应用入口加载。离线测试可显式传入 `llm=模拟模型`，此时不会创建真实客户端。传入已有模型时，模型配置保持不变，Agent 的执行配置单独解析。
 
@@ -267,12 +267,12 @@ updated = Config.resolve(config, overrides={"max_steps": 8}, environ={})
 
 ### 接口与错误处理
 
-`MyLLM` 的连接参数统一使用 `model`、`api_key`、`base_url`，与 `Config` 字段及 SDK 参数一致。位置参数顺序为模型名、密钥、服务地址。
+`LLM` 的连接参数统一使用 `model`、`api_key`、`base_url`，与 `Config` 字段及 SDK 参数一致。位置参数顺序为模型名、密钥、服务地址。
 
 模型配置统一通过 `llm.config` 读取，例如 `llm.config.temperature`、`llm.config.timeout` 和 `llm.config.base_url`。仅保留 Agent 使用的 `llm.model` 只读属性。显式传入 `temperature=None` 或 `max_tokens=None` 表示省略参数；`timeout=None`、`timeout=0` 都会报错。
 
 ```python
-llm = MyLLM(
+llm = LLM(
     model="your-model",
     api_key="your-api-key",
     base_url="https://your-provider.example/v1",
@@ -395,7 +395,7 @@ tools = registry.to_openai_tools()
 
 ### 原生工具调用
 
-`MyLLM.invoke()` 返回 `LLMResponse`：`content` 为可空文本，`tool_calls` 为调用列表，`finish_reason` 为结束原因。每个 `ToolCall` 含 `id`、`name`、原始 JSON 字符串 `arguments`。模型层不执行工具；`Agent.run()` 返回 `AgentResult`。
+`LLM.invoke()` 返回 `LLMResponse`：`content` 为可空文本，`tool_calls` 为调用列表，`finish_reason` 为结束原因。每个 `ToolCall` 含 `id`、`name`、原始 JSON 字符串 `arguments`。模型层不执行工具；`Agent.run()` 返回 `AgentResult`。
 
 BasicAgent 和 ReActAgent 共用以下循环：
 
@@ -406,7 +406,7 @@ BasicAgent 和 ReActAgent 共用以下循环：
 
 参数错误、未知工具和执行错误均反馈结构化结果并占用轮次。调用 ID 缺失或同批重复、响应截断或拒绝、空响应使 Agent 返回未完成的结果；不写入成功会话历史。多工具调用按顺序执行。服务不支持原生协议时直接报告失败。
 
-工具请求参数在每次 `invoke()` 时提供，不能作为 `MyLLM` 构造默认值或藏在 `extra_body` 中。Agent 的 `tools` 只能来自注册表。`tool_choice` 等单次 `run()` 参数会应用于该运行的每一轮，普通 Agent 使用默认自动选择；不要在希望模型自行结束的循环中持续强制调用工具。
+工具请求参数在每次 `invoke()` 时提供，不能作为 `LLM` 构造默认值或藏在 `extra_body` 中。Agent 的 `tools` 只能来自注册表。`tool_choice` 等单次 `run()` 参数会应用于该运行的每一轮，普通 Agent 使用默认自动选择；不要在希望模型自行结束的循环中持续强制调用工具。
 
 ReAct 的 `prompt_template` 现在是策略提示文本，与 `sys_prompt` 一起组成系统消息，不进行占位符格式化。用户问题和工具结果通过独立消息传递。`current_history` 是本次运行的消息字典列表，每次运行重建；长期 `_history` 继续只保存成功的用户问题和最终答案。
 

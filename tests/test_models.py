@@ -9,7 +9,7 @@ import unittest
 import os
 from unittest.mock import patch
 
-from bpcagent import BasicAgent, CalculatorTool, Config, MyLLM, LLMResponse, ReActAgent, ToolRegistry
+from bpcagent import BasicAgent, CalculatorTool, Config, LLM, LLMResponse, ReActAgent, ToolRegistry
 from bpcagent.agents.exceptions import ConfigException, LLMException
 
 
@@ -27,7 +27,7 @@ class LLMTests(unittest.TestCase):
         self.client = patcher.start().return_value
         self.client.chat.completions.create.return_value = text_response()
         self.addCleanup(patcher.stop)
-        self.llm = MyLLM(model="test", api_key="test-key", base_url="https://example.invalid/v1")
+        self.llm = LLM(model="test", api_key="test-key", base_url="https://example.invalid/v1")
 
     def test_invoke_returns_response_text(self):
         self.assertEqual(self.llm.invoke([{"role": "user", "content": "hi"}]),
@@ -125,7 +125,7 @@ class LLMTests(unittest.TestCase):
             "LLM_BASE_URL": "https://example.invalid/v1", "TEMPERATURE": "0.1",
             "MAX_TOKENS": "100", "LLM_TIMEOUT": "90",
         }), patch("bpcagent.agents.models.OpenAI") as factory:
-            llm = MyLLM(config=Config(model="config-model", temperature=0.4),
+            llm = LLM(config=Config(model="config-model", temperature=0.4),
                         model="explicit-model", api_key="explicit-key",
                         base_url="https://explicit.invalid/v1", temperature=0.3,
                         timeout=60, top_p=0.8)
@@ -140,7 +140,7 @@ class LLMTests(unittest.TestCase):
             self.assertEqual(llm.config.timeout, 60)
 
     def test_none_omits_parameters_for_both_request_modes(self):
-        llm = MyLLM(config=Config.resolve(self.llm.config, overrides={"max_tokens": 99}, environ={}),
+        llm = LLM(config=Config.resolve(self.llm.config, overrides={"max_tokens": 99}, environ={}),
                     temperature=None, max_tokens=None)
         llm.invoke([])
         options = self.client.chat.completions.create.call_args.kwargs
@@ -156,7 +156,7 @@ class LLMTests(unittest.TestCase):
 
     def test_requests_reuse_snapshot_and_copy_extra_parameters(self):
         body = {"metadata": {"tag": "original"}}
-        llm = MyLLM(config=self.llm.config, extra_body=body)
+        llm = LLM(config=self.llm.config, extra_body=body)
         body["metadata"]["tag"] = "changed"
         with patch.dict(os.environ, {"TEMPERATURE": "bad", "LLM_TIMEOUT": "0"}):
             llm.invoke([])
@@ -188,11 +188,11 @@ class LLMTests(unittest.TestCase):
         for options in ({"timeout": None}, {"timeout": 0}, {"stream": True}):
             with self.subTest(options=options), patch("bpcagent.agents.models.OpenAI") as factory:
                 with self.assertRaises(ConfigException):
-                    MyLLM(config=self.llm.config, **options)
+                    LLM(config=self.llm.config, **options)
                 factory.assert_not_called()
         with patch("bpcagent.agents.models.OpenAI") as factory:
             with self.assertRaises(ConfigException):
-                MyLLM()
+                LLM()
             factory.assert_not_called()
 
 

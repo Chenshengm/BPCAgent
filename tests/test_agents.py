@@ -7,7 +7,7 @@ import json
 import os
 from unittest.mock import Mock, patch
 
-from bpcagent import BasicAgent, CalculatorTool, Config, MyLLM, ReActAgent, ToolRegistry, ToolArgs, Tool, ToolCall, LLMResponse
+from bpcagent import BasicAgent, CalculatorTool, Config, LLM, ReActAgent, ToolRegistry, ToolArgs, Tool, ToolCall, LLMResponse
 from bpcagent.agents.exceptions import ConfigException
 
 
@@ -43,7 +43,7 @@ class AgentTests(unittest.TestCase):
         self.addCleanup(env.stop)
 
     def make_model(self, *responses):
-        llm = Mock(spec=MyLLM)
+        llm = Mock(spec=LLM)
         llm.model = "test-model"
         remaining = iter(responses)
         calls = []
@@ -170,9 +170,9 @@ class AgentTests(unittest.TestCase):
 
     def test_agent_config_does_not_modify_supplied_model(self):
         with patch("bpcagent.agents.models.OpenAI"):
-            llm = MyLLM(model="test", api_key="test-key", base_url="https://example.invalid", temperature=0.2)
+            llm = LLM(model="test", api_key="test-key", base_url="https://example.invalid", temperature=0.2)
         original = llm.config
-        with patch("bpcagent.agents.agents.MyLLM") as factory:
+        with patch("bpcagent.agents.agents.LLM") as factory:
             agent = BasicAgent("test", llm, config=Config(temperature=0.9))
             factory.assert_not_called()
         self.assertEqual(agent.config.temperature, 0.9)
@@ -191,7 +191,7 @@ class AgentTests(unittest.TestCase):
                 factory.assert_called_once_with(api_key="test-key",
                     base_url="https://example.invalid/v1", timeout=120)
                 factory.return_value.chat.completions.create.assert_not_called()
-                self.assertIsInstance(agent.llm, MyLLM)
+                self.assertIsInstance(agent.llm, LLM)
                 self.assertIs(agent.config, agent.llm.config)
                 self.assertEqual(agent.llm.model, "env-model")
                 self.assertEqual(agent.config.temperature, 0.3 if config is not None else 0.2)

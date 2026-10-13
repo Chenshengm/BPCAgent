@@ -10,7 +10,7 @@ import tempfile
 from unittest.mock import Mock
 
 from bpcagent import (
-    BasicAgent, Config, LLMResponse, MyLLM, ShellTool, ShellToolConfig, ToolCall, ToolRegistry,
+    BasicAgent, Config, LLMResponse, LLM, ShellTool, ShellToolConfig, ToolCall, ToolRegistry,
 )
 
 
@@ -34,7 +34,7 @@ Path('summary.json').write_text(json.dumps(result, indent=2) + '\\n', encoding='
         f"{shlex.quote(python)} summarize.py",
         "cat summary.json",
     ]
-    llm = Mock(spec=MyLLM)
+    llm = Mock(spec=LLM)
     llm.model = "offline-shell-demo"
     llm.invoke.side_effect = [
         LLMResponse(tool_calls=[ToolCall(

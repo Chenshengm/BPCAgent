@@ -3,14 +3,14 @@
 from .config import Config
 from .exceptions import AgentException, BasicException, ConfigException, LLMException, ToolException
 from .messages import LLMResponse, Message, ToolCall
-from .models import MyLLM
+from .models import LLM
 from .result import AgentResult
 from .agents import Agent, BasicAgent, ReActAgent
 from .patient_state import PatientStateAgent
 from .unit_patient_state import UnitPatientStateAgent
 
 __all__ = [
-    "Agent", "AgentResult", "BasicAgent", "ReActAgent", "PatientStateAgent", "Config", "MyLLM",
+    "Agent", "AgentResult", "BasicAgent", "ReActAgent", "PatientStateAgent", "Config", "LLM",
     "UnitPatientStateAgent", "Message", "LLMResponse", "ToolCall",
     "BasicException", "AgentException", "ConfigException", "LLMException", "ToolException",
 ]

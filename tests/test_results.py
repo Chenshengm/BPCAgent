@@ -5,7 +5,7 @@ import json
 import unittest
 from unittest.mock import Mock
 
-from bpcagent import AgentResult, BasicAgent, CalculatorTool, Config, LLMResponse, MyLLM, ReActAgent, ToolCall, ToolRegistry
+from bpcagent import AgentResult, BasicAgent, CalculatorTool, Config, LLMResponse, LLM, ReActAgent, ToolCall, ToolRegistry
 from bpcagent.agents.exceptions import AgentException, ConfigException, LLMException
 
 
@@ -20,7 +20,7 @@ def call(arguments='{"input":"2+3*4"}'):
 
 class ResultTests(unittest.TestCase):
     def make_agent(self, cls, *responses, tools=False, **settings):
-        llm = Mock(spec=MyLLM)
+        llm = Mock(spec=LLM)
         llm.invoke.side_effect = responses
         registry = ToolRegistry()
         if tools:

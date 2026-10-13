@@ -6,7 +6,7 @@ from pathlib import Path
 import sys
 from unittest.mock import Mock, patch
 
-from bpcagent import AgentResult, BasicAgent, CalculatorTool, Config, LLMResponse, Message, MyLLM, ToolCall, ToolRegistry
+from bpcagent import AgentResult, BasicAgent, CalculatorTool, Config, LLMResponse, Message, LLM, ToolCall, ToolRegistry
 from bpcagent.agents.exceptions import AgentException, BasicException
 
 
@@ -54,7 +54,7 @@ def main() -> int:
         else:
             print("离线演示：模型响应为预设结构化响应，工具调用模式会实际执行计算器。")
             config = Config.resolve(environ={})
-            llm = Mock(spec=MyLLM)
+            llm = Mock(spec=LLM)
             llm.model = "offline-demo"
             responses = [LLMResponse(content="2 + 3 * 4 = 14。", finish_reason="stop")]
             if args.with_tools:
