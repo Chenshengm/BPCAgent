@@ -5,6 +5,7 @@ from .agents import PatientStateAgent, UnitPatientStateAgent
 from .tools import CalculatorTool, FunctionTool, Tool, ToolArgs, ToolError, ToolRegistry, ToolResult
 from .tools import ShellArgs, ShellTool, ShellToolConfig, SandboxShellTool
 from .sandbox import SandboxConfig, DockerSandbox, SandboxError
+from .tasks import Task, TaskResult, PatientStateTask, PatientStateTaskConfig
 
 __all__ = [
     "Agent",
@@ -20,6 +21,10 @@ __all__ = [
     "SandboxConfig",
     "DockerSandbox",
     "SandboxError",
+    "Task",
+    "TaskResult",
+    "PatientStateTask",
+    "PatientStateTaskConfig",
     "Config",
     "Message",
     "LLMResponse",

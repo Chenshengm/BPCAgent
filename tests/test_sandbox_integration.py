@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from bpcagent import Config, DockerSandbox, LLMResponse, SandboxConfig, SandboxError, ToolCall, UnitPatientStateAgent
+from bpcagent import Config, DockerSandbox, LLMResponse, PatientStateTask, PatientStateTaskConfig, SandboxConfig, SandboxError, ToolCall, UnitPatientStateAgent
 from bpcagent.tools.bpc_patient import PatientArtifactStore, PatientEvidenceTool, PatientStateTool
 
 
@@ -165,6 +165,12 @@ print('checks passed')
         self.assertTrue(self.sandbox.broken)
 
     def test_unit_demo_with_synthetic_data_and_validation_retry(self):
+        self._exercise_patient_demo()
+
+    def test_patient_task_with_real_agent_and_sandbox(self):
+        self._exercise_patient_demo(use_task=True)
+
+    def _exercise_patient_demo(self, *, use_task=False):
         previous = Path.cwd()
         os.chdir(self.root)
         self.addCleanup(os.chdir, previous)
@@ -207,11 +213,32 @@ Path('/workspace/output/tumor_markers_standardized.json').write_text(json.dumps(
         model.invoke.side_effect = [tool("get_patient_state", {"cutoff_day": 1}, "state"),
                                    tool("get_patient_evidence", {"cutoff_day": 1, "evidence_refs": ["E-test"]}, "evidence"),
                                    shell(999, "bad"), report, shell(28.842, "fixed"), report]
+        agent = None
         with patch("bpcagent.agents.patient_state.create_patient_tools", side_effect=factory):
-            agent = UnitPatientStateAgent(patient_id="SYNTHETIC", cutoff_day=1, data_dir="unused",
-                                          work_dir=task_dir, config=Config(max_tool_iterations=4),
-                                          sandbox_config=SandboxConfig(), llm=model)
-        result = agent.run()
+            if use_task:
+                def create_agent(**kwargs):
+                    nonlocal agent, task_dir
+                    task_dir = kwargs["work_dir"]
+                    agent = UnitPatientStateAgent(**kwargs, llm=model)
+                    return agent
+
+                task = PatientStateTask(PatientStateTaskConfig(
+                    data_dir=self.root, workspace_root=self.root / "tasks",
+                    agent_config=Config(max_tool_iterations=4),
+                ))
+                with patch("bpcagent.tasks.patient_state.UnitPatientStateAgent", side_effect=create_agent):
+                    task_result = task.run(patient_id="SYNTHETIC", cutoff_day=1)
+                self.assertTrue(task_result.finished, task_result.info)
+                self.assertEqual(task_result.task_dir, task_dir)
+                self.assertEqual(task_result.log_path, agent.log_path.resolve())
+                self.assertEqual(set(task_result.artifacts), {"state", "evidence", "normalized", "script"})
+                self.assertTrue(all(path.is_file() for path in task_result.artifacts.values()))
+                result = task_result.agent_result
+            else:
+                agent = UnitPatientStateAgent(patient_id="SYNTHETIC", cutoff_day=1, data_dir="unused",
+                                              work_dir=task_dir, config=Config(max_tool_iterations=4),
+                                              sandbox_config=SandboxConfig(), llm=model)
+                result = agent.run()
         self.assertTrue(result.finished, result.info)
         self.assertEqual([v["status"] for v in agent.validation_attempts], ["failed", "passed"])
         self.assertTrue((task_dir / "scripts" / "standardize_tm.py").is_file())

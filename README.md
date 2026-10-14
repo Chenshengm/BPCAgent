@@ -21,6 +21,12 @@
 
 患者工具通过 `create_patient_tools()` 创建；患者、数据目录、日期上限与工作目录由应用绑定，模型只需填写查询参数。
 
+## 通过 Task 运行完整患者流程
+
+`PatientStateTask` 将配置、工作目录创建、Agent 调用和产物收集封装为任务入口。先用 `PatientStateTaskConfig` 配置数据路径、总工作区、模型和 sandbox，再调用 `task.run(patient_id=..., cutoff_day=..., cancer_id=...)`；其中 `cancer_id` 可省略。每次调用创建独立 Agent，返回 `TaskResult`，可直接读取 `finished`、`artifacts`、`task_dir`、`log_path` 和 `agent_result`。
+
+抽象 `Task` 与 `TaskResult` 同在 `src/tasks/base.py`；现有 Agent 的执行逻辑保持不变。完整示例和参数说明见 [Task 使用文档](doc/tasks.md)。
+
 ## 注册工具、创建并使用智能体
 
 ```python
