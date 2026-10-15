@@ -14,6 +14,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from bpcagent import Config, DockerSandbox, LLMResponse, PatientStateTask, PatientStateTaskConfig, SandboxConfig, SandboxError, ToolCall, UnitPatientStateAgent
+from bpcagent.agents.unit_rules import UNIT_SCHEMA_VERSION, UNIT_RULES_VERSION
 from bpcagent.tools.bpc_patient import PatientArtifactStore, PatientEvidenceTool, PatientStateTool
 
 
@@ -179,10 +180,13 @@ print('checks passed')
             "meta": {"patient_id": "SYNTHETIC", "cutoff_day": 1},
             "evidence_refs": {"E-test": {}},
             "observations": {"tumor_markers": [
-                {"tumor_marker_id": "m1", "analyte_raw": "Testosterone", "unit_raw": "nmol/L", "value_raw": "1"},
+                {"tumor_marker_id": "m1", "analyte_raw": "Total Testosterone", "unit_raw": "nmol/L", "value_raw": "1"},
                 {"tumor_marker_id": "m2", "analyte_raw": "PSA", "unit_raw": None, "value_raw": "2"},
+                {"tumor_marker_id": "m3", "analyte_raw": "PSA", "unit_raw": "nmol/L", "value_raw": "3"},
             ]},
         }
+        for marker in state["observations"]["tumor_markers"]:
+            marker.update(event_day=1, available_day=1, evidence_refs=["E-test"])
         bound = SimpleNamespace(patient_id="SYNTHETIC", cancer_id=None, max_cutoff_day=1,
                                 get_patient_state=Mock(return_value=state),
                                 get_evidence=Mock(return_value={"E-test": {"sources": []}}))
@@ -202,14 +206,26 @@ from pathlib import Path
 source = Path('/workspace/input/patient_state_day_1_001.json')
 state = json.loads(source.read_text())
 markers = state['observations']['tumor_markers']
+for i, marker in enumerate(markers):
+    marker['unit_assessment'] = dict(status='accepted' if i == 0 else 'missing_unit',
+        analyte_type='total_testosterone' if i == 0 else 'psa', effective_unit='nmol/L' if i == 0 else None,
+        candidate_unit=None, correction_id=None, supporting_evidence_refs=['E-test'],
+        conflicting_evidence_refs=[], reason='Synthetic review of source and visible history.')
 markers[0]['normalization'] = dict(status='normalized', value={value}, unit='ng/dL', factor=28.842, reason=None)
 markers[1]['normalization'] = dict(status='unresolved', value=None, unit=None, factor=None, reason='Missing unit')
-Path('/workspace/output/tumor_markers_standardized.json').write_text(json.dumps(dict(source_state=source.name, meta=state['meta'], tumor_markers=markers)))
+markers[2]['unit_assessment'].update(status='inferred_correction', effective_unit='ug/L',
+    reason='Synthetic fixture: infer a mass-unit label from the visible assay context.')
+markers[2]['normalization'] = dict(status='normalized', value=3, unit='ng/mL', factor=1, reason=None)
+Path('/workspace/output/tumor_markers_standardized.json').write_text(json.dumps(dict(schema_version='{UNIT_SCHEMA_VERSION}', rules_version='{UNIT_RULES_VERSION}', source_state=source.name, meta=state['meta'], tumor_markers=markers)))
 '''
-            return tool("run_shell", {"command": "cat > /workspace/scripts/standardize_tm.py <<'PY'\n" + script + "PY\npython /workspace/scripts/standardize_tm.py\ncat /workspace/output/tumor_markers_standardized.json"}, identity)
+            response = tool("run_shell", {"command": "cat > /workspace/scripts/standardize_tm.py <<'PY'\n" + script + "PY\n"}, identity)
+            response.tool_calls.append(ToolCall(id=identity + "-execute", name="run_shell", arguments=json.dumps({
+                "command": "/usr/local/bin/python /workspace/scripts/standardize_tm.py",
+            })))
+            return response
 
         model = Mock()
-        report = LLMResponse(content="Normalized 1, unresolved 1.", reasoning_content="Results checked.", finish_reason="stop")
+        report = LLMResponse(content="Normalized 2, unresolved 1.", reasoning_content="Results checked.", finish_reason="stop")
         model.invoke.side_effect = [tool("get_patient_state", {"cutoff_day": 1}, "state"),
                                    tool("get_patient_evidence", {"cutoff_day": 1, "evidence_refs": ["E-test"]}, "evidence"),
                                    shell(999, "bad"), report, shell(28.842, "fixed"), report]
@@ -231,7 +247,7 @@ Path('/workspace/output/tumor_markers_standardized.json').write_text(json.dumps(
                 self.assertTrue(task_result.finished, task_result.info)
                 self.assertEqual(task_result.task_dir, task_dir)
                 self.assertEqual(task_result.log_path, agent.log_path.resolve())
-                self.assertEqual(set(task_result.artifacts), {"state", "evidence", "normalized", "script"})
+                self.assertEqual(set(task_result.artifacts), {"state", "evidence", "normalized", "script", "unit_inputs"})
                 self.assertTrue(all(path.is_file() for path in task_result.artifacts.values()))
                 result = task_result.agent_result
             else:
@@ -240,6 +256,13 @@ Path('/workspace/output/tumor_markers_standardized.json').write_text(json.dumps(
                                               sandbox_config=SandboxConfig(), llm=model)
                 result = agent.run()
         self.assertTrue(result.finished, result.info)
+        changes = result.info["unit_changes"]
+        self.assertEqual(len(changes), 1)
+        self.assertEqual(changes[0]["status"], "inferred_correction")
+        self.assertEqual(changes[0]["source_location"], "observations.tumor_markers[2]")
+        self.assertEqual(changes[0]["before"]["unit"], "nmol/L")
+        self.assertEqual(changes[0]["after"]["normalization"]["value"], 3)
+        self.assertIn("observations.tumor_markers[2]", result.output["text"])
         self.assertEqual([v["status"] for v in agent.validation_attempts], ["failed", "passed"])
         self.assertTrue((task_dir / "scripts" / "standardize_tm.py").is_file())
         self.assertEqual(json.loads((task_dir / "input" / "patient_state_day_1_001.json").read_text()), state)

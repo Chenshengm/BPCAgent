@@ -41,6 +41,7 @@ class TaskTests(unittest.TestCase):
             (root / "input" / f"patient_evidence_day_{kwargs['cutoff_day']}_002.json").write_text("{}")
             (root / "scripts" / "standardize_tm.py").write_text("# synthetic fixture")
             (root / "output" / "tumor_markers_standardized.json").write_text("{}")
+            (root / "input" / "unit_inputs.json").write_text("{}")
         log = self.root / f"{root.name}.json"
         log.write_text("{}")
         info = {} if finished is True else {"stop_reason": "unit_processing_failed", "error": "synthetic failure"}
@@ -74,7 +75,7 @@ class TaskTests(unittest.TestCase):
         self.assertEqual(arguments["data_dir"], self.data)
         self.assertEqual(arguments["rules_path"], self.rules)
         self.assertIs(arguments["sandbox_config"], self.task.config.sandbox_config)
-        self.assertEqual(set(result.artifacts), {"state", "evidence", "normalized", "script"})
+        self.assertEqual(set(result.artifacts), {"state", "evidence", "normalized", "script", "unit_inputs"})
         self.assertTrue(all(p.is_absolute() and p.is_file() for p in result.artifacts.values()))
         self.assertTrue(result.log_path.is_absolute())
         self.assertFalse((result.task_dir / "run_result.json").exists())
@@ -136,7 +137,7 @@ class TaskTests(unittest.TestCase):
                     side_effect=lambda **kwargs: self.fake_agent(finished=finished, **kwargs)):
                 result = self.task.run(patient_id=f"P-{finished}", cutoff_day=1)
                 self.assertFalse(result.finished)
-                self.assertEqual(len(result.artifacts), 4)
+                self.assertEqual(len(result.artifacts), 5)
 
     def test_missing_artifacts_do_not_change_original_agent_result(self):
         with patch("bpcagent.tasks.patient_state.UnitPatientStateAgent",
@@ -158,9 +159,29 @@ class TaskTests(unittest.TestCase):
             PatientStateTask(self.config.model_copy(update={"data_dir": self.root / "missing"}))
         with self.assertRaises(FileNotFoundError):
             PatientStateTask(self.config.model_copy(update={"rules_path": self.root / "missing.json"}))
+        with self.assertRaises(FileNotFoundError):
+            PatientStateTask(self.config.model_copy(update={"unit_corrections_path": self.root / "missing.json"}))
         for values in ({"timezone": "not/a/timezone"}, {"sandbox_config": None}):
             with self.subTest(values=values), self.assertRaises(ValidationError):
                 PatientStateTaskConfig(data_dir=self.data, workspace_root=self.root / "work", **values)
+
+    def test_unit_config_and_validated_unresolved_counts_are_forwarded(self):
+        corrections = self.root / "corrections.json"
+        corrections.write_text("{}")
+        task = PatientStateTask(self.config.model_copy(update={"unit_corrections_path": corrections}))
+        summary = {"total": 2, "normalized": 1, "unresolved": 1, "assessments": {"missing_unit": 1}}
+
+        def create(**kwargs):
+            self.assertEqual(kwargs["unit_corrections_path"], corrections)
+            agent = self.fake_agent(**kwargs)
+            agent.run.return_value.info["unit_summary"] = summary
+            return agent
+
+        with patch("bpcagent.tasks.patient_state.UnitPatientStateAgent", side_effect=create):
+            result = task.run(patient_id="P1", cutoff_day=1)
+        self.assertTrue(result.finished)
+        self.assertEqual(result.info["unit_summary"], summary)
+        self.assertIsNot(result.info["unit_summary"], summary)
 
     def test_paths_and_environment_are_snapshotted_once(self):
         previous = Path.cwd()

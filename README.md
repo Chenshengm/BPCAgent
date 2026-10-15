@@ -10,7 +10,7 @@
 | --- | --- | --- |
 | `BasicAgent` | 通用问答与工具调用，保留对话历史 | `agent.run("Task")` |
 | `PatientStateAgent` | 提取并保存指定患者、截止日期的状态与证据，完成后直接停止，不生成模型分析 | `agent.run()` |
-| `UnitPatientStateAgent` | 先提取状态与证据，再通过 Shell 统一肿瘤标志物单位，独立验收通过后返回英文处理报告 | `agent.run()` |
+| `UnitPatientStateAgent` | 提取后通过 Shell 核查单位、根据证据直接应用推断修正并统一单位，报告改动位置与理由，独立验收后返回报告 | `agent.run()` |
 
 | 工具类 | 注册名称 | 参数与行为 |
 | --- | --- | --- |
@@ -150,7 +150,9 @@ print(result.output["text"] if result.finished else result.info)
 print("Full log:", agent.log_path)
 ```
 
-两个阶段各自使用 `max_tool_iterations` 轮次上限。标准化结果保存为 `tumor_markers_standardized.json`，保留原始字段，仅新增 `normalization`；无法转换的记录标记为 `unresolved` 并附英文原因。验收失败会反馈模型继续修正，日志保存为 `log/UnitPatientStateAgent_*.json`，包含验收记录和最终完成状态。代码见 [unit_patient_state.py](src/agents/unit_patient_state.py)。
+两个阶段各自使用 `max_tool_iterations` 轮次上限。标准化结果保存为 `tumor_markers_standardized.json`（schema `2.1`），保留原始字段，新增 `unit_assessment` 和 `normalization`。智能体可以根据当前患者的可见证据直接修正单位或补充总／游离睾酮类型，标记为 `inferred_correction` 并应用到标准化结果，无需外部确认。证据仍不足时才保留待核验。可选的 `unit_corrections_path` 用于提供优先采用的已确认资料；模型推断不会冒充 `confirmed_correction`。宿主将改动位置、前后值、理由和证据整理到 `info.unit_changes`，并追加到最终文字报告。
+
+输入目录新增 `unit_inputs.json`，保存固定规则和仅适用于当前患者、截止日、记录的纠错资料。模型必须保存 `standardize_tm.py`，在独立 shell 调用中执行提示词给出的完整命令；宿主程序检查执行成功、脚本内容未变及换算结果。验收失败会反馈模型修复。`result.info["unit_summary"]` 是宿主验收后的分类计数，存在 `unresolved` 不等于执行失败。日志仍为 `log/UnitPatientStateAgent_*.json`，包含规则版本、验收记录和最终状态。协议、纠错资料示例与限制见 [Task 使用文档](doc/tasks.md)。
 
 如需隔离执行，额外传入 `sandbox_config=SandboxConfig(image="bpcagent-sandbox:0.1")`（从 `bpcagent` 导入 `SandboxConfig`）。需先启动本机 Docker 并构建镜像。此模式中 `work_dir` 参数是整个任务目录：提取文件位于 `input/`，脚本位于 `scripts/`，标准化结果位于 `output/`，临时文件位于 `tmp/`。输入对容器只读，每次 shell 调用使用独立的无网络容器。详见 [sandbox 配置、构建和测试说明](doc/sandbox.md)。未传入配置时保留本地执行方式；sandbox 失败不会退回本地执行。
 

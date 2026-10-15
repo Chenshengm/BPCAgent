@@ -28,11 +28,12 @@ class PatientStateTaskConfig(BaseModel):
     data_dir: Path
     workspace_root: Path
     rules_path: Path | None = None
+    unit_corrections_path: Path | None = None
     agent_config: Config = Field(default_factory=lambda: Config(max_tool_iterations=10))
     sandbox_config: SandboxConfig = Field(default_factory=SandboxConfig)
     timezone: str = "Asia/Shanghai"
 
-    @field_validator("data_dir", "workspace_root", "rules_path")
+    @field_validator("data_dir", "workspace_root", "rules_path", "unit_corrections_path")
     @classmethod
     def resolve_path(cls, value):
         return value.expanduser().resolve() if value is not None else None
@@ -60,6 +61,8 @@ class PatientStateTask(Task):
             raise NotADirectoryError(f"Patient dataset directory does not exist: {config.data_dir}")
         if config.rules_path is not None and not config.rules_path.is_file():
             raise FileNotFoundError(f"Patient field rules do not exist: {config.rules_path}")
+        if config.unit_corrections_path is not None and not config.unit_corrections_path.is_file():
+            raise FileNotFoundError(f"Unit corrections do not exist: {config.unit_corrections_path}")
         if config.workspace_root.exists() and not config.workspace_root.is_dir():
             raise NotADirectoryError(f"Workspace root is not a directory: {config.workspace_root}")
         if any(c in str(config.workspace_root) for c in (",", "\n", "\r")):
@@ -74,7 +77,7 @@ class PatientStateTask(Task):
         artifacts = self._collect_artifacts(task_dir, cutoff_day)
         info = deepcopy(agent_result.info)
         finished = agent_result.finished is True
-        required = {"state", "evidence", "normalized", "script"}
+        required = {"state", "evidence", "normalized", "script", "unit_inputs"}
         if finished and (missing := required - artifacts.keys()):
             finished = False
             info.update(stop_reason="incomplete_artifacts",
@@ -112,6 +115,7 @@ class PatientStateTask(Task):
             data_dir=self.config.data_dir, rules_path=self.config.rules_path,
             work_dir=task_dir, config=self.config.agent_config,
             sandbox_config=self.config.sandbox_config,
+            unit_corrections_path=self.config.unit_corrections_path,
         )
 
     @staticmethod
@@ -133,6 +137,7 @@ class PatientStateTask(Task):
                 if candidates:
                     artifacts[kind] = max(candidates, key=lambda item: item[0])[1]
         for key, directory, filename in (
+            ("unit_inputs", "input", "unit_inputs.json"),
             ("normalized", "output", "tumor_markers_standardized.json"),
             ("script", "scripts", "standardize_tm.py"),
         ):

@@ -1,5 +1,7 @@
 """Test the packaged extraction/normalization workflow with real shell calls."""
 
+from copy import deepcopy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -12,6 +14,8 @@ from unittest.mock import Mock, patch
 
 from bpcagent import Config, LLMResponse, SandboxConfig, SandboxError, ToolCall, UnitPatientStateAgent
 from bpcagent.agents import UnitPatientStateAgent as ExportedAgent
+from bpcagent.agents.exceptions import AgentException
+from bpcagent.agents.unit_rules import UNIT_SCHEMA_VERSION, UNIT_RULES_VERSION
 from bpcagent.tools.bpc_patient import PatientArtifactStore, PatientEvidenceTool, PatientStateTool
 
 
@@ -31,14 +35,16 @@ class UnitPatientStateAgentTests(unittest.TestCase):
         self.addCleanup(os.chdir, previous)
         self.work_dir = Path(temp.name) / "workspace"
         self.state = {
-            "meta": {"patient_id": "P1", "cutoff_day": 220},
+            "meta": {"patient_id": "P1", "cutoff_day": 220, "cohort": "TEST", "target_cancer_id": "C1"},
             "evidence_refs": {"E-test": {}},
             "observations": {"tumor_markers": [
                 {"tumor_marker_id": "M1", "analyte_raw": "PSA", "unit_raw": "ug/L", "value_raw": "0"},
-                {"tumor_marker_id": "M2", "analyte_raw": "testosterone", "unit_raw": "nmol/L", "value_raw": "1"},
+                {"tumor_marker_id": "M2", "analyte_raw": "Total Testosterone", "unit_raw": "nmol/L", "value_raw": "1"},
                 {"tumor_marker_id": "M3", "analyte_raw": "PSA", "unit_raw": "nmol/L", "value_raw": "2"},
             ]},
         }
+        for marker in self.state["observations"]["tumor_markers"]:
+            marker.update(event_day=200, available_day=200, evidence_refs=["E-test"])
         bound = SimpleNamespace(
             patient_id="P1", cancer_id=None, max_cutoff_day=220,
             get_patient_state=Mock(return_value=self.state),
@@ -58,29 +64,76 @@ class UnitPatientStateAgentTests(unittest.TestCase):
             tool_response("get_patient_evidence", {"cutoff_day": 220, "evidence_refs": ["E-test"]}, "evidence"),
         ]
 
-    def shell_response(self, *, incorrect=False, tamper=False):
-        normalizations = [
-            {"status": "normalized", "value": 0, "unit": "ng/mL", "factor": 1, "reason": None},
-            {"status": "normalized", "value": 999 if incorrect else 28.842,
-             "unit": "ng/dL", "factor": 28.842, "reason": None},
-            {"status": "unresolved", "value": None, "unit": None, "factor": None,
-             "reason": "Unsupported unit for PSA."},
+    def valid_output(self):
+        markers = deepcopy(self.state["observations"]["tumor_markers"])
+        norms = [
+            dict(status="normalized", value=0, unit="ng/mL", factor=1, reason=None),
+            dict(status="normalized", value=28.842, unit="ng/dL", factor=28.842, reason=None),
+            dict(status="unresolved", value=None, unit=None, factor=None, reason="PSA molar unit needs confirmation."),
         ]
+        for i, marker in enumerate(markers):
+            marker["normalization"] = norms[i]
+            marker["unit_assessment"] = self.assessment(
+                status="suspected_error" if i == 2 else "accepted",
+                kind="total_testosterone" if i == 1 else "psa",
+                unit=None if i == 2 else marker["unit_raw"],
+            )
+        return dict(schema_version=UNIT_SCHEMA_VERSION, rules_version=UNIT_RULES_VERSION,
+                    source_state="patient_state_day_220_001.json", meta=deepcopy(self.state["meta"]), tumor_markers=markers)
+
+    @staticmethod
+    def assessment(*, status="accepted", kind="psa", unit="ug/L", correction_id=None):
+        return dict(status=status, analyte_type=kind, effective_unit=unit, candidate_unit=None,
+                    correction_id=correction_id, supporting_evidence_refs=["E-test"],
+                    conflicting_evidence_refs=[], reason="Synthetic source review; no contradictory evidence.")
+
+    def shell_response(self, *, incorrect=False, tamper=False, output=None):
+        out = self.valid_output() if output is None else output
+        if incorrect:
+            out["tumor_markers"][1]["normalization"]["value"] = 999
         code = (
             "import json; from pathlib import Path; "
-            "p=Path('patient_state_day_220_001.json'); state=json.loads(p.read_text()); "
-            f"norms={normalizations!r}; "
-            "markers=[dict(marker, normalization=norm) for marker,norm "
-            "in zip(state['observations']['tumor_markers'], norms)]; "
-            "out={'source_state':p.name, 'meta':state['meta'], 'tumor_markers':markers}; "
+            "p=Path('patient_state_day_220_001.json'); "
+            f"out={out!r}; "
             "target=Path('tumor_markers_standardized.json'); "
             "target.write_text(json.dumps(out)); json.loads(target.read_text())"
         )
         if tamper:
             code += "; p.write_text('{}')"
-        return tool_response("run_shell", {
-            "command": shlex.quote(sys.executable) + " -c " + shlex.quote(code),
-        }, "shell")
+        command = "cat > standardize_tm.py <<'PY'\n" + code + "\nPY\n"
+        response = tool_response("run_shell", {"command": command}, "shell-write")
+        response.tool_calls.append(ToolCall(id="shell-execute", name="run_shell", arguments=json.dumps({
+            "command": shlex.quote(sys.executable) + " " + shlex.quote(str(self.agent.work_dir / "standardize_tm.py")),
+        })))
+        return response
+
+    def validate_fixture(self, output):
+        source = self.work_dir / "patient_state_day_220_001.json"
+        source.write_text(json.dumps(self.state))
+        snapshot = self.agent._prepare_unit_inputs(self.state)
+        originals = {p: p.read_bytes() for p in (source, snapshot)}
+        target = self.work_dir / "tumor_markers_standardized.json"
+        target.write_text(json.dumps(output))
+        (self.work_dir / "standardize_tm.py").write_text("# Synthetic saved script")
+        self.agent._executed_script_sha256 = hashlib.sha256(b"# Synthetic saved script").hexdigest()
+        messages = [{"role": "tool", "content": json.dumps(dict(tool_name="run_shell", status="success",
+                                                               data=dict(exit_code=0, timed_out=False)))}]
+        self.agent._validate_output(target, source, self.state, originals, messages)
+
+    def correction(self, marker_index=2, **overrides):
+        marker = self.state["observations"]["tumor_markers"][marker_index]
+        entry = {key: marker[key] for key in ("tumor_marker_id", "event_day", "analyte_raw", "value_raw", "unit_raw")}
+        entry.update({key: self.state["meta"][key] for key in ("patient_id", "cohort", "target_cancer_id")})
+        entry.update(id="fix-1", corrected_unit="ug/L", analyte_type="psa", available_day=210,
+                     source="Synthetic verified source", source_version="v1")
+        entry.update(overrides)
+        return entry
+
+    def set_corrections(self, *entries):
+        path = self.work_dir.parent / "trusted_corrections.json"
+        path.write_text(json.dumps(dict(schema_version="1.0", version="synthetic-v1", corrections=list(entries))))
+        self.agent.unit_corrections_path = path
+        self.agent._correction_document = self.agent._load_unit_corrections()
 
     def report(self):
         return LLMResponse(content="Normalized: 2. Unresolved: 1. Output: tumor_markers_standardized.json.", finish_reason="stop")
@@ -91,6 +144,9 @@ class UnitPatientStateAgentTests(unittest.TestCase):
         result = self.agent.run()
         self.assertTrue(result.finished)
         self.assertEqual(result.info["validation_status"], "passed")
+        self.assertEqual(result.info["unit_summary"]["normalized"], 2)
+        self.assertEqual(result.info["unit_summary"]["unresolved"], 1)
+        self.assertEqual(result.info["unit_summary"]["assessments"]["suspected_error"], 1)
         self.assertEqual(self.llm.invoke.call_count, 4)
         self.assertIs(self.agent.tool_registry, self.extraction_registry)
         self.assertEqual(json.loads((self.work_dir / "patient_state_day_220_001.json").read_text()), self.state)
@@ -129,6 +185,26 @@ class UnitPatientStateAgentTests(unittest.TestCase):
         self.assertFalse(result.finished)
         self.assertIn("No successful shell call", result.info["error"])
 
+    def test_script_changed_after_execution_requires_rerun(self):
+        shell = self.shell_response()
+        shell.tool_calls.append(ToolCall(id="modify-script", name="run_shell", arguments=json.dumps({
+            "command": "printf '\\n# changed after execution\\n' >> standardize_tm.py",
+        })))
+        self.llm.invoke.side_effect = self.extraction + [shell, self.report()]
+        result = self.agent.run(max_tool_iterations=2)
+        self.assertFalse(result.finished)
+        self.assertIn("Execute the saved script", result.info["error"])
+
+    def test_written_script_and_output_without_verified_execution_are_rejected(self):
+        shell = self.shell_response()
+        shell.tool_calls[1] = ToolCall(id="indirect-execution", name="run_shell", arguments=json.dumps({
+            "command": shlex.quote(sys.executable) + " -c " + shlex.quote("exec(open('standardize_tm.py').read())"),
+        }))
+        self.llm.invoke.side_effect = self.extraction + [shell, self.report()]
+        result = self.agent.run(max_tool_iterations=2)
+        self.assertFalse(result.finished)
+        self.assertIn("Execute the saved script", result.info["error"])
+
     def test_failed_extraction_does_not_start_processing(self):
         self.llm.invoke.return_value = self.report()
         result = self.agent.run()
@@ -152,6 +228,220 @@ class UnitPatientStateAgentTests(unittest.TestCase):
         self.assertFalse(log["finished"])
         self.assertEqual(log["sandbox"]["backend"], "docker")
         self.assertEqual(log["sandbox"]["active_containers"], [])
+
+    def test_verified_correction_is_applied_without_changing_raw_record(self):
+        self.set_corrections(self.correction())
+        output = self.valid_output()
+        marker = output["tumor_markers"][2]
+        marker["unit_assessment"] = self.assessment(status="confirmed_correction", correction_id="fix-1")
+        marker["normalization"] = dict(status="normalized", value=2, unit="ng/mL", factor=1, reason=None)
+        self.validate_fixture(output)
+        self.assertEqual(marker["unit_raw"], "nmol/L")
+        self.assertEqual(self.agent.unit_summary["assessments"]["confirmed_correction"], 1)
+
+    def inferred_output(self):
+        output = self.valid_output()
+        marker = output["tumor_markers"][2]
+        marker["unit_assessment"] = self.assessment(status="inferred_correction", unit="ug/L")
+        marker["unit_assessment"]["reason"] = "Source and visible neighboring mass-unit PSA records support a mislabeled unit."
+        marker["normalization"] = dict(status="normalized", value=2, unit="ng/mL", factor=1, reason=None)
+        return output
+
+    def test_model_inference_is_applied_without_correction_file_and_audited(self):
+        self.llm.invoke.side_effect = self.extraction + [self.shell_response(output=self.inferred_output()), self.report()]
+        result = self.agent.run()
+        self.assertTrue(result.finished, result.info)
+        self.assertEqual(result.info["unit_summary"]["assessments"]["inferred_correction"], 1)
+        changes = result.info["unit_changes"]
+        self.assertEqual(len(changes), 1)
+        self.assertEqual(changes[0]["before"]["unit"], "nmol/L")
+        self.assertEqual(changes[0]["after"]["effective_unit"], "ug/L")
+        self.assertEqual(changes[0]["after"]["normalization"]["value"], 2)
+        self.assertEqual(changes[0]["source_location"], "observations.tumor_markers[2]")
+        self.assertIn("M3", result.output["text"])
+        self.assertIn(changes[0]["reason"], result.output["text"])
+        self.assertEqual(json.loads(self.agent.log_path.read_text())["info"]["unit_changes"], changes)
+        self.assertEqual(json.loads((self.work_dir / "patient_state_day_220_001.json").read_text()), self.state)
+
+    def test_missing_unit_can_be_filled_by_explicit_inference(self):
+        self.state["observations"]["tumor_markers"][2]["unit_raw"] = None
+        self.validate_fixture(self.inferred_output())
+        self.assertIsNone(self.agent.unit_changes[0]["before"]["unit"])
+
+    def test_generic_testosterone_can_be_resolved_by_explicit_inference(self):
+        self.state["observations"]["tumor_markers"][1]["analyte_raw"] = "Testosterone"
+        output = self.valid_output()
+        output["tumor_markers"][1]["unit_assessment"]["status"] = "inferred_correction"
+        self.validate_fixture(output)
+        change = self.agent.unit_changes[0]
+        self.assertEqual(change["before"]["analyte_type"], "unknown")
+        self.assertEqual(change["after"]["analyte_type"], "total_testosterone")
+        self.assertEqual(change["after"]["normalization"]["value"], 28.842)
+
+    def test_inference_cannot_override_an_applicable_verified_correction(self):
+        self.set_corrections(self.correction())
+        with self.assertRaisesRegex(AgentException, "cannot override"):
+            self.validate_fixture(self.inferred_output())
+
+    def test_inference_cannot_invent_a_psa_molar_factor(self):
+        output = self.inferred_output()
+        output["tumor_markers"][2]["unit_assessment"]["effective_unit"] = "nmol/L"
+        with self.assertRaisesRegex(AgentException, "no supported conversion"):
+            self.validate_fixture(output)
+
+    def test_inference_still_requires_visible_evidence_and_reason(self):
+        output = self.inferred_output()
+        output["tumor_markers"][2]["unit_assessment"]["supporting_evidence_refs"].append("E-future")
+        with self.assertRaisesRegex(AgentException, "out-of-cutoff"):
+            self.validate_fixture(output)
+
+    def test_inference_cannot_silently_change_a_known_assay(self):
+        output = self.valid_output()
+        output["tumor_markers"][1]["unit_assessment"].update(status="inferred_correction", analyte_type="free_testosterone")
+        with self.assertRaisesRegex(AgentException, "known assay"):
+            self.validate_fixture(output)
+
+    def test_psa_ngdl_needs_confirmation_even_with_correct_math(self):
+        self.state["observations"]["tumor_markers"][0].update(unit_raw="ng/dL", value_raw="200")
+        output = self.valid_output()
+        output["tumor_markers"][0]["normalization"].update(value=2, factor=0.01)
+        with self.assertRaisesRegex(AgentException, "trusted source confirmation"):
+            self.validate_fixture(output)
+
+    def test_confirmed_psa_ngdl_can_be_converted_without_relabeling(self):
+        self.state["observations"]["tumor_markers"][0].update(unit_raw="ng/dL", value_raw="200")
+        self.set_corrections(self.correction(0, corrected_unit="ng/dL"))
+        output = self.valid_output()
+        output["tumor_markers"][0]["unit_assessment"]["correction_id"] = "fix-1"
+        output["tumor_markers"][0]["normalization"].update(value=2, factor=0.01)
+        self.validate_fixture(output)
+
+    def test_changed_unit_cannot_use_the_original_units_factor(self):
+        self.state["observations"]["tumor_markers"][0].update(unit_raw="ng/dL", value_raw="250")
+        self.set_corrections(self.correction(0, corrected_unit="ng/mL"))
+        output = self.valid_output()
+        output["tumor_markers"][0]["unit_assessment"] = self.assessment(
+            status="confirmed_correction", unit="ng/mL", correction_id="fix-1")
+        output["tumor_markers"][0]["normalization"].update(value=2.5, factor=0.01)
+        with self.assertRaisesRegex(AgentException, "expected 250.0 using effective_unit"):
+            self.validate_fixture(output)
+
+    def test_fabricated_confirmation_is_rejected(self):
+        output = self.valid_output()
+        output["tumor_markers"][2]["unit_assessment"] = self.assessment(status="confirmed_correction", correction_id="invented")
+        with self.assertRaisesRegex(AgentException, "not authorized"):
+            self.validate_fixture(output)
+
+    def test_correction_for_another_record_cannot_be_reused(self):
+        self.set_corrections(self.correction(0, corrected_unit="ug/L"))
+        output = self.valid_output()
+        output["tumor_markers"][0]["unit_assessment"]["correction_id"] = "fix-1"
+        output["tumor_markers"][2]["unit_assessment"] = self.assessment(status="confirmed_correction", correction_id="fix-1")
+        with self.assertRaisesRegex(AgentException, "not authorized"):
+            self.validate_fixture(output)
+
+    def test_corrections_filter_patient_time_and_raw_value_before_exposure(self):
+        self.set_corrections(self.correction(id="other-patient", patient_id="P2"),
+                             self.correction(id="future", available_day=221),
+                             self.correction(id="stale", value_raw="999"),
+                             self.correction(id="other-cancer", target_cancer_id="C2"))
+        snapshot = self.agent._prepare_unit_inputs(self.state)
+        self.assertEqual(json.loads(snapshot.read_text())["corrections"], [])
+        self.assertEqual(self.agent._approved_corrections, {})
+
+    def test_correction_configuration_is_snapshotted_before_model_calls(self):
+        self.set_corrections(self.correction())
+        self.agent.unit_corrections_path.write_text("{}")
+        snapshot = self.agent._prepare_unit_inputs(self.state)
+        self.assertEqual(json.loads(snapshot.read_text())["corrections"][0]["id"], "fix-1")
+
+    def test_conflicting_trusted_corrections_fail_preparation(self):
+        self.set_corrections(self.correction(), self.correction(id="fix-2", corrected_unit="ng/mL"))
+        with self.assertRaisesRegex(AgentException, "Multiple applicable"):
+            self.agent._prepare_unit_inputs(self.state)
+
+    def test_missing_unit_cannot_be_filled_from_institution_habit(self):
+        self.state["observations"]["tumor_markers"][0]["unit_raw"] = None
+        output = self.valid_output()
+        output["tumor_markers"][0]["unit_assessment"]["effective_unit"] = "ng/mL"
+        with self.assertRaisesRegex(AgentException, "authorized source unit"):
+            self.validate_fixture(output)
+
+    def test_candidate_does_not_authorize_conversion(self):
+        output = self.valid_output()
+        marker = output["tumor_markers"][2]
+        marker["unit_assessment"]["candidate_unit"] = "ug/L"
+        marker["normalization"].update(status="normalized", value=2, unit="ng/mL", factor=1)
+        with self.assertRaisesRegex(AgentException, "authorized conversion"):
+            self.validate_fixture(output)
+
+    def test_generic_testosterone_cannot_be_assumed_total(self):
+        self.state["observations"]["tumor_markers"][1]["analyte_raw"] = "Testosterone"
+        with self.assertRaisesRegex(AgentException, "Assay identity"):
+            self.validate_fixture(self.valid_output())
+
+    def test_legal_rare_testosterone_unit_can_pass_after_assessment(self):
+        self.state["observations"]["tumor_markers"][1]["unit_raw"] = "ng/mL"
+        output = self.valid_output()
+        output["tumor_markers"][1]["normalization"].update(value=100, factor=100)
+        self.validate_fixture(output)
+
+    def test_inequality_is_preserved_and_unresolved(self):
+        self.state["observations"]["tumor_markers"][0]["value_raw"] = "<0.1"
+        output = self.valid_output()
+        output["tumor_markers"][0]["normalization"] = dict(
+            status="unresolved", value=None, unit=None, factor=None, reason="Not an exact value.")
+        self.validate_fixture(output)
+        self.assertEqual(self.agent.unit_summary["unresolved"], 2)
+
+    def test_unknown_evidence_is_rejected(self):
+        output = self.valid_output()
+        output["tumor_markers"][2]["unit_assessment"]["supporting_evidence_refs"].append("E-future-day-2302")
+        with self.assertRaisesRegex(AgentException, "out-of-cutoff evidence"):
+            self.validate_fixture(output)
+
+    def test_future_record_is_rejected_before_processing(self):
+        self.state["observations"]["tumor_markers"][2].update(event_day=2302, available_day=2302)
+        with self.assertRaisesRegex(AgentException, "not visible"):
+            self.agent._prepare_unit_inputs(self.state)
+
+    def test_empty_marker_list_is_successful_completed_work(self):
+        self.state["observations"]["tumor_markers"] = []
+        self.validate_fixture(self.valid_output())
+        self.assertEqual(self.agent.unit_summary["total"], 0)
+
+    def test_changed_raw_field_is_rejected(self):
+        output = self.valid_output()
+        output["tumor_markers"][0]["unit_raw"] = "ng/mL"
+        with self.assertRaisesRegex(AgentException, "Original record"):
+            self.validate_fixture(output)
+
+    def test_wrong_rule_version_is_rejected(self):
+        output = self.valid_output()
+        output["rules_version"] = "model-invented-rules"
+        with self.assertRaisesRegex(AgentException, "version is incorrect"):
+            self.validate_fixture(output)
+
+    def test_free_testosterone_remains_distinct_and_numeric_types_are_strict(self):
+        marker = self.state["observations"]["tumor_markers"][1]
+        marker.update(analyte_raw="Free Testosterone", unit_raw="pg/mL", value_raw="100")
+        output = self.valid_output()
+        output["tumor_markers"][1]["unit_assessment"]["analyte_type"] = "free_testosterone"
+        output["tumor_markers"][1]["normalization"].update(value=10, factor=0.1)
+        self.validate_fixture(output)
+        with self.assertRaisesRegex(ValueError, "incorrect conversion"):
+            self.agent._validate_normalization(marker, dict(status="normalized", value=True, unit="ng/dL", factor=0.1, reason=None), "pg/mL")
+
+    def test_unrepresentable_numeric_value_is_unresolved(self):
+        self.state["observations"]["tumor_markers"][0]["value_raw"] = "1e999999999"
+        output = self.valid_output()
+        output["tumor_markers"][0]["normalization"] = dict(
+            status="unresolved", value=None, unit=None, factor=None, reason="Value overflows numeric representation.")
+        self.validate_fixture(output)
+
+    def test_malformed_correction_dates_are_configuration_errors(self):
+        with self.assertRaisesRegex(ValueError, "integer day"):
+            self.set_corrections(self.correction(available_day=True))
 
 
 if __name__ == "__main__":
