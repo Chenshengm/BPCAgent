@@ -15,7 +15,7 @@ from unittest.mock import Mock, patch
 from bpcagent import Config, LLMResponse, SandboxConfig, SandboxError, ToolCall, UnitPatientStateAgent
 from bpcagent.agents import UnitPatientStateAgent as ExportedAgent
 from bpcagent.agents.exceptions import AgentException
-from bpcagent.agents.unit_rules import UNIT_SCHEMA_VERSION, UNIT_RULES_VERSION
+from bpcagent.agents.unit_rules import EVIDENCE_OBSERVATION_FIELDS, UNIT_SCHEMA_VERSION, UNIT_RULES_VERSION
 from bpcagent.tools.bpc_patient import PatientArtifactStore, PatientEvidenceTool, PatientStateTool
 
 
@@ -74,6 +74,7 @@ class UnitPatientStateAgentTests(unittest.TestCase):
         for i, marker in enumerate(markers):
             marker["normalization"] = norms[i]
             marker["unit_assessment"] = self.assessment(
+                marker=marker,
                 status="suspected_error" if i == 2 else "accepted",
                 kind="total_testosterone" if i == 1 else "psa",
                 unit=None if i == 2 else marker["unit_raw"],
@@ -82,9 +83,15 @@ class UnitPatientStateAgentTests(unittest.TestCase):
                     source_state="patient_state_day_220_001.json", meta=deepcopy(self.state["meta"]), tumor_markers=markers)
 
     @staticmethod
-    def assessment(*, status="accepted", kind="psa", unit="ug/L", correction_id=None):
+    def observation(marker):
+        return {key: deepcopy(marker.get(key)) for key in EVIDENCE_OBSERVATION_FIELDS}
+
+    def assessment(self, *, marker=None, status="accepted", kind="psa", unit="ug/L", correction_id=None):
+        if marker is None:
+            marker = self.state["observations"]["tumor_markers"][0]
         return dict(status=status, analyte_type=kind, effective_unit=unit, candidate_unit=None,
-                    correction_id=correction_id, supporting_evidence_refs=["E-test"],
+                    correction_id=correction_id, supporting_evidence_refs=list(marker["evidence_refs"]),
+                    evidence_observations=[self.observation(marker)],
                     conflicting_evidence_refs=[], reason="Synthetic source review; no contradictory evidence.")
 
     def shell_response(self, *, incorrect=False, tamper=False, output=None):
@@ -233,7 +240,7 @@ class UnitPatientStateAgentTests(unittest.TestCase):
         self.set_corrections(self.correction())
         output = self.valid_output()
         marker = output["tumor_markers"][2]
-        marker["unit_assessment"] = self.assessment(status="confirmed_correction", correction_id="fix-1")
+        marker["unit_assessment"] = self.assessment(marker=marker, status="confirmed_correction", correction_id="fix-1")
         marker["normalization"] = dict(status="normalized", value=2, unit="ng/mL", factor=1, reason=None)
         self.validate_fixture(output)
         self.assertEqual(marker["unit_raw"], "nmol/L")
@@ -242,7 +249,7 @@ class UnitPatientStateAgentTests(unittest.TestCase):
     def inferred_output(self):
         output = self.valid_output()
         marker = output["tumor_markers"][2]
-        marker["unit_assessment"] = self.assessment(status="inferred_correction", unit="ug/L")
+        marker["unit_assessment"] = self.assessment(marker=marker, status="inferred_correction", unit="ug/L")
         marker["unit_assessment"]["reason"] = "Source and visible neighboring mass-unit PSA records support a mislabeled unit."
         marker["normalization"] = dict(status="normalized", value=2, unit="ng/mL", factor=1, reason=None)
         return output
@@ -267,6 +274,87 @@ class UnitPatientStateAgentTests(unittest.TestCase):
         self.state["observations"]["tumor_markers"][2]["unit_raw"] = None
         self.validate_fixture(self.inferred_output())
         self.assertIsNone(self.agent.unit_changes[0]["before"]["unit"])
+
+    def history_output(self):
+        # Distinct refs are essential: the regression involved two real records
+        # on the same day, a PSA measurement and a testosterone measurement.
+        for marker in self.state["observations"]["tumor_markers"]:
+            ref = "E-" + marker["tumor_marker_id"]
+            marker["evidence_refs"] = [ref]
+            self.state["evidence_refs"][ref] = {}
+        output = self.inferred_output()
+        assessment = output["tumor_markers"][2]["unit_assessment"]
+        assessment["supporting_evidence_refs"].append("E-M1")
+        assessment["evidence_observations"].append(self.observation(self.state["observations"]["tumor_markers"][0]))
+        return output
+
+    def test_checked_history_is_included_in_result_and_report(self):
+        output = self.history_output()
+        self.llm.invoke.side_effect = self.extraction + [self.shell_response(output=output), self.report()]
+        result = self.agent.run()
+        self.assertTrue(result.finished, result.info)
+        checked = result.info["unit_changes"][0]["evidence_observations"]
+        self.assertEqual([r["tumor_marker_id"] for r in checked], ["M3", "M1"])
+        self.assertIn("Checked source: M1, day 200, PSA: '0' 'ug/L'", result.output["text"])
+
+    def test_testosterone_reference_cannot_be_psa_history(self):
+        output = self.history_output()
+        assessment = output["tumor_markers"][2]["unit_assessment"]
+        assessment["supporting_evidence_refs"][-1] = "E-M2"
+        assessment["evidence_observations"][-1] = self.observation(self.state["observations"]["tumor_markers"][1])
+        with self.assertRaisesRegex(AgentException, "different analyte"):
+            self.validate_fixture(output)
+
+    def test_mismatched_measurement_facts_are_rejected(self):
+        output = self.history_output()
+        marker = self.state["observations"]["tumor_markers"][2]
+        for field, wrong in (("tumor_marker_id", "M2"), ("event_day", 199), ("event_day", True),
+                             ("analyte_raw", "Testosterone"), ("value_raw", "274.31"),
+                             ("unit_raw", "nmol/L"), ("normal_range_lower_raw", "8"),
+                             ("normal_range_upper_raw", "32"), ("evidence_refs", ["E-M2"])):
+            with self.subTest(field=field, wrong=wrong):
+                assessment = deepcopy(output["tumor_markers"][2]["unit_assessment"])
+                assessment["evidence_observations"][-1][field] = wrong
+                with self.assertRaisesRegex(ValueError, "does not match the source"):
+                    self.agent._validate_evidence_observations(marker, assessment, self.state)
+
+    def test_measurement_ref_without_snapshot_is_rejected(self):
+        output = self.history_output()
+        output["tumor_markers"][2]["unit_assessment"]["evidence_observations"].pop()
+        with self.assertRaisesRegex(AgentException, "lacks a checked observation"):
+            self.validate_fixture(output)
+
+    def test_conflicting_measurement_ref_also_requires_matching_snapshot(self):
+        output = self.history_output()
+        assessment = output["tumor_markers"][2]["unit_assessment"]
+        assessment["supporting_evidence_refs"].remove("E-M1")
+        assessment["conflicting_evidence_refs"].append("E-M1")
+        assessment["evidence_observations"][-1]["evidence_refs"] = ["E-M2"]
+        with self.assertRaisesRegex(AgentException, "evidence_refs does not match"):
+            self.validate_fixture(output)
+
+    def test_bad_history_reference_triggers_repair_loop(self):
+        corrected = self.history_output()
+        wrong = deepcopy(corrected)
+        observation = wrong["tumor_markers"][2]["unit_assessment"]["evidence_observations"][-1]
+        observation["evidence_refs"] = ["E-M2"]
+        self.llm.invoke.side_effect = self.extraction + [
+            self.shell_response(output=wrong), self.report(),
+            self.shell_response(output=corrected), self.report(),
+        ]
+        result = self.agent.run()
+        self.assertTrue(result.finished, result.info)
+        self.assertEqual([a["status"] for a in self.agent.validation_attempts], ["failed", "passed"])
+        self.assertIn("evidence_refs does not match", self.agent.validation_attempts[0]["error"])
+        self.assertEqual(result.info["unit_changes"][0]["evidence_observations"][-1]["evidence_refs"], ["E-M1"])
+
+    def test_explicit_free_testosterone_cannot_be_total_history(self):
+        self.state["observations"]["tumor_markers"][0]["analyte_raw"] = "Free Testosterone"
+        output = self.valid_output()
+        assessment = output["tumor_markers"][1]["unit_assessment"]
+        assessment["evidence_observations"].append(self.observation(self.state["observations"]["tumor_markers"][0]))
+        with self.assertRaisesRegex(ValueError, "different analyte"):
+            self.agent._validate_evidence_observations(self.state["observations"]["tumor_markers"][1], assessment, self.state)
 
     def test_generic_testosterone_can_be_resolved_by_explicit_inference(self):
         self.state["observations"]["tumor_markers"][1]["analyte_raw"] = "Testosterone"
@@ -328,7 +416,7 @@ class UnitPatientStateAgentTests(unittest.TestCase):
 
     def test_fabricated_confirmation_is_rejected(self):
         output = self.valid_output()
-        output["tumor_markers"][2]["unit_assessment"] = self.assessment(status="confirmed_correction", correction_id="invented")
+        output["tumor_markers"][2]["unit_assessment"] = self.assessment(marker=output["tumor_markers"][2], status="confirmed_correction", correction_id="invented")
         with self.assertRaisesRegex(AgentException, "not authorized"):
             self.validate_fixture(output)
 
@@ -336,7 +424,7 @@ class UnitPatientStateAgentTests(unittest.TestCase):
         self.set_corrections(self.correction(0, corrected_unit="ug/L"))
         output = self.valid_output()
         output["tumor_markers"][0]["unit_assessment"]["correction_id"] = "fix-1"
-        output["tumor_markers"][2]["unit_assessment"] = self.assessment(status="confirmed_correction", correction_id="fix-1")
+        output["tumor_markers"][2]["unit_assessment"] = self.assessment(marker=output["tumor_markers"][2], status="confirmed_correction", correction_id="fix-1")
         with self.assertRaisesRegex(AgentException, "not authorized"):
             self.validate_fixture(output)
 

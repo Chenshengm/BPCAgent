@@ -21,7 +21,7 @@ from ..tools import SandboxShellTool, ShellTool, ShellToolConfig, ToolRegistry
 
 
 from .unit_rules import (
-    ANALYTE_TYPES, ASSESSMENT_STATUSES, UNIT_RULES, UNIT_REVIEW_RULES,
+    ANALYTE_TYPES, ASSESSMENT_STATUSES, EVIDENCE_OBSERVATION_FIELDS, UNIT_RULES, UNIT_REVIEW_RULES,
     UNIT_RULE_SOURCES, UNIT_RULES_VERSION, UNIT_SCHEMA_VERSION,
     analyte_family, analyte_type, expected_normalization, normalize_unit,
 )
@@ -299,6 +299,10 @@ class UnitPatientStateAgent(PatientStateAgent):
                 "review_rules": UNIT_REVIEW_RULES, "rule_sources": UNIT_RULE_SOURCES,
                 "corrections_version": self._correction_document["version"],
                 "corrections": list(self._approved_corrections.values()),
+                "evidence_observations": [
+                    {key: deepcopy(marker.get(key)) for key in EVIDENCE_OBSERVATION_FIELDS}
+                    for marker in markers
+                ],
             }
             # Fingerprint only this patient's selected configuration, not the full multi-patient file.
             document["corrections_sha256"] = hashlib.sha256(json.dumps(
@@ -357,7 +361,7 @@ source_state is the source filename only; copy meta unchanged. Preserve every or
 record order and count. Add exactly unit_assessment and normalization to each marker.
 unit_assessment has exactly these keys:
   status, analyte_type, effective_unit, candidate_unit, correction_id,
-  supporting_evidence_refs, conflicting_evidence_refs, reason.
+  supporting_evidence_refs, conflicting_evidence_refs, evidence_observations, reason.
 - analyte_type: psa, total_testosterone, free_testosterone, or unknown.
 - effective_unit: the unit authorized for use, or null when unresolved/suspected/missing.
 - candidate_unit: a proposed but unapplied unit, or null; never apply a candidate silently.
@@ -366,6 +370,19 @@ unit_assessment has exactly these keys:
   marker's own evidence AND every other record used in your justification (e.g. both neighbors).
   Explain how any conflicting evidence was weighed; if it leaves the decision ambiguous, do not apply.
   Do not fabricate evidence or cite future records.
+- evidence_observations: an array of exact measurement snapshots copied from the read-only
+  unit_inputs.json evidence_observations index. Select by tumor_marker_id, never by adjacent
+  array position or by constructing an evidence id. Include the assessed record itself and
+  every measurement cited in either evidence list. Each snapshot has exactly:
+  tumor_marker_id, event_day, analyte_raw, value_raw, unit_raw,
+  normal_range_lower_raw, normal_range_upper_raw, evidence_refs (missing raw fields are null).
+  Copy the ORIGINAL raw units and values, not your repaired interpretations. The host checks
+  every field and the record-to-evidence mapping. Cited measurement snapshots must be from
+  the same analyte family; explicit total and free testosterone cannot serve as each other's
+  history. For PSA history, select PSA records, even if a testosterone record has the same day.
+  Non-measurement context such as treatment may still be cited by its actual evidence id.
+  Describe concrete measurements in the reason/report only using these checked snapshots.
+  Check each reference range individually; do not copy one range or date span to all records.
 - reason: a nonempty English explanation; explain contextual review for testosterone units.
 normalization has exactly status, value, unit, factor, reason:
 - accepted/confirmed_correction/inferred_correction with a supported unit, resolved assay and ordinary finite numeric
@@ -419,7 +436,7 @@ write scripts to /workspace/scripts, results to /workspace/output and temporary 
 
     def _validate_unit_assessment(self, marker, assessment, state):
         keys = {"status", "analyte_type", "effective_unit", "candidate_unit", "correction_id",
-                "supporting_evidence_refs", "conflicting_evidence_refs", "reason"}
+                "supporting_evidence_refs", "conflicting_evidence_refs", "evidence_observations", "reason"}
         if not isinstance(assessment, dict) or set(assessment) != keys:
             raise ValueError("Invalid unit_assessment schema")
         status = assessment["status"]
@@ -437,6 +454,7 @@ write scripts to /workspace/scripts, results to /workspace/output and temporary 
                 raise ValueError("Unknown, duplicate or out-of-cutoff evidence reference")
         if not set(marker["evidence_refs"]).intersection(assessment["supporting_evidence_refs"]):
             raise ValueError("Assessment must cite the marker's own source evidence")
+        self._validate_evidence_observations(marker, assessment, state)
         correction_id = assessment["correction_id"]
         correction = self._approved_corrections.get(correction_id)
         if correction_id is not None and (correction is None or correction["tumor_marker_id"] != marker["tumor_marker_id"]):
@@ -487,6 +505,44 @@ write scripts to /workspace/scripts, results to /workspace/output and temporary 
         if kind == "unknown" or family is None or expected_unit not in UNIT_RULES[family]["factors"]:
             raise ValueError("Unknown assay/unsupported unit must remain unresolved")
         return assessment["effective_unit"]
+
+    @staticmethod
+    def _validate_evidence_observations(marker, assessment, state):
+        """Bind claimed measurement facts to source rows, without interpreting prose."""
+        observations = assessment["evidence_observations"]
+        if not isinstance(observations, list):
+            raise ValueError("evidence_observations must be a list of source measurement snapshots")
+        records = {record["tumor_marker_id"]: record for record in state["observations"]["tumor_markers"]}
+        cited = set(assessment["supporting_evidence_refs"] + assessment["conflicting_evidence_refs"])
+        measurement_refs = {ref for record in records.values() for ref in record["evidence_refs"]}
+        covered, seen = set(), set()
+        target_kind = analyte_type(marker.get("analyte_raw"))
+        if target_kind == "unknown":
+            target_kind = assessment["analyte_type"]
+        for snapshot in observations:
+            if not isinstance(snapshot, dict) or set(snapshot) != set(EVIDENCE_OBSERVATION_FIELDS):
+                raise ValueError("Invalid evidence observation fields; copy the unit_inputs snapshot")
+            identity = snapshot["tumor_marker_id"]
+            if not isinstance(identity, str) or identity not in records or identity in seen:
+                raise ValueError("Unknown or duplicate evidence observation record id")
+            seen.add(identity)
+            source = records[identity]
+            for key in EVIDENCE_OBSERVATION_FIELDS:
+                if json.dumps(snapshot[key], sort_keys=True) != json.dumps(source.get(key), sort_keys=True):
+                    raise ValueError(f"Evidence observation {identity}: {key} does not match the source record; "
+                                     "copy this record's facts and evidence ids from unit_inputs.json")
+            if not cited.intersection(source["evidence_refs"]):
+                raise ValueError(f"Evidence observation {identity} is not cited in the evidence lists")
+            source_kind = analyte_type(source.get("analyte_raw"))
+            if (analyte_family(source.get("analyte_raw")) != analyte_family(marker.get("analyte_raw"))
+                    or {target_kind, source_kind} == {"total_testosterone", "free_testosterone"}):
+                raise ValueError(f"Evidence observation {identity}: different analyte cannot support same-analyte history "
+                                 f"for {marker['tumor_marker_id']}; select the actual matching measurement")
+            covered.update(source["evidence_refs"])
+        if marker["tumor_marker_id"] not in seen:
+            raise ValueError("Evidence observations must include the assessed record itself")
+        if missing := (cited & measurement_refs) - covered:
+            raise ValueError("Cited measurement evidence lacks a checked observation: " + ", ".join(sorted(missing)))
 
     @staticmethod
     def _validate_normalization(marker, normalization, effective_unit):
@@ -578,6 +634,7 @@ write scripts to /workspace/scripts, results to /workspace/output and temporary 
                         "reason": assessment["reason"], "correction_id": assessment["correction_id"],
                         "supporting_evidence_refs": list(assessment["supporting_evidence_refs"]),
                         "conflicting_evidence_refs": list(assessment["conflicting_evidence_refs"]),
+                        "evidence_observations": deepcopy(assessment["evidence_observations"]),
                     })
             # Only host-validated counts are exposed; never parse the model's prose for statistics.
             self.unit_summary = counts
@@ -601,5 +658,12 @@ write scripts to /workspace/scripts, results to /workspace/output and temporary 
                 f"result {after['normalization']['value']!r} {after['normalization']['unit']!r}. "
                 f"Reason: {change['reason']} Evidence: {', '.join(refs)}."
             )
+            for observation in change["evidence_observations"]:
+                lines.append(
+                    f"  Checked source: {observation['tumor_marker_id']}, day {observation['event_day']}, "
+                    f"{observation['analyte_raw']}: {observation['value_raw']!r} {observation['unit_raw']!r}; "
+                    f"range {observation['normal_range_lower_raw']!r}..{observation['normal_range_upper_raw']!r}; "
+                    f"evidence {', '.join(observation['evidence_refs'])}."
+                )
         return "\n".join(lines)
 

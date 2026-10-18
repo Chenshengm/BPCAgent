@@ -82,7 +82,7 @@ workspace/YYYYMMDD_HHMMSS_patient-id_cutoff-day/
 
 第一版不包含任务队列、批量调度、评分/奖励、断点恢复或通用 Agent 工厂。未来替换/合并 Agent 时，优先修改 `PatientStateTask._create_agent()`，保持查询接口和结果结构稳定。
 
-## 单位核查与纠错（输出 schema 2.1）
+## 单位核查与纠错（输出 schema 2.2）
 
 保持 `PatientStateAgent` 的提取逻辑不变。`UnitPatientStateAgent` 使用 shell 读取文件、分析异常、编写并执行脚本；没有 Processor 类。固定规则及宿主验收使用的换算函数位于 `src/agents/unit_rules.py`。模型脚本不导入宿主包，所需规则从只读 `input/unit_inputs.json` 获取。
 
@@ -103,7 +103,7 @@ workspace/YYYYMMDD_HHMMSS_patient-id_cutoff-day/
 
 | 对象 | 必需字段 |
 | --- | --- |
-| `unit_assessment` | `status`, `analyte_type`, `effective_unit`, `candidate_unit`, `correction_id`, `supporting_evidence_refs`, `conflicting_evidence_refs`, `reason` |
+| `unit_assessment` | `status`, `analyte_type`, `effective_unit`, `candidate_unit`, `correction_id`, `supporting_evidence_refs`, `conflicting_evidence_refs`, `evidence_observations`, `reason` |
 | `normalization` | `status`, `value`, `unit`, `factor`, `reason` |
 
 `unit_assessment.status`：
@@ -196,3 +196,13 @@ Agent 构造时加载可信资料，模型运行期间不重新读取；每个 T
 结果中的 `info.unit_changes` 由宿主在验收通过后生成，包含每条应用修正的记录 ID、日期、source_location、output_location、before、after、reason、correction_id 和支持／冲突证据。相同内容会追加到最终文字报告并保存在现有日志中，模型漏写报告条目也不会丢失审计记录。原始字段仍保留在输入与输出中；下游应读取 normalization 和 unit_assessment，不能继续把 unit_raw 当作修正后的单位。没有另外创建 run_result.json。
 
 这是“可追溯的模型推断已应用”，不是医学事实已被独立验证；语义准确性仍需评估。若前后记录参与判断，必须同时列出它们的证据 ID。宿主能检查引用存在及范围，但不能自动证明自然语言理由中的每个因果判断。
+
+## 检验记录与证据对应（schema 2.2）
+
+规则版本 `2026-10-18.1` 在 `unit_inputs.json` 中增加由宿主生成的 `evidence_observations` 索引。每条包含 `tumor_marker_id`、`event_day`、`analyte_raw`、`value_raw`、`unit_raw`、`normal_range_lower_raw`、`normal_range_upper_raw` 和 `evidence_refs`；缺失原始字段以 null 表示。
+
+模型按记录 ID 从索引选择原始快照，写入每条 `unit_assessment.evidence_observations`，必须包含本条记录及支持／冲突引用涉及的检验记录。宿主按原始 state 逐字段核对，并要求引用的检验记录属于同一项目家族；明确的总／游离睾酮不得互作同类历史。治疗等非检验上下文仍可用现有证据 ID 引用，不在此检验快照校验范围内。
+
+例如，将 PSA 274.31 ug/L 配到睾酮记录的 ID 或证据 ID 会因字段不匹配失败；完整复制睾酮记录来支持 PSA 历史也会因项目不匹配失败。失败沿用现有验收反馈与 Shell 修复循环，不自动替模型选择新证据。
+
+通过验收的快照同时进入 `info.unit_changes` 和宿主追加的文字报告，供直接回查。程序验证结构化检验事实的对应关系，不宣称能理解并证明任意自然语言理由或临床因果推断。旧 schema 2.1 文件保留不改写，新运行使用 2.2；外部调用参数不变。

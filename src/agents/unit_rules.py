@@ -10,8 +10,12 @@ import math
 import re
 
 
-UNIT_SCHEMA_VERSION = "2.1"
-UNIT_RULES_VERSION = "2026-10-15.2"
+UNIT_SCHEMA_VERSION = "2.2"
+UNIT_RULES_VERSION = "2026-10-18.1"
+EVIDENCE_OBSERVATION_FIELDS = (
+    "tumor_marker_id", "event_day", "analyte_raw", "value_raw", "unit_raw",
+    "normal_range_lower_raw", "normal_range_upper_raw", "evidence_refs",
+)
 UNIT_RULES = {
     "psa": {"unit": "ng/mL", "factors": {"ng/ml": 1, "ug/l": 1, "ng/dl": 0.01}},
     "testosterone": {

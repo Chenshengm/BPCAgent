@@ -211,6 +211,10 @@ for i, marker in enumerate(markers):
         analyte_type='total_testosterone' if i == 0 else 'psa', effective_unit='nmol/L' if i == 0 else None,
         candidate_unit=None, correction_id=None, supporting_evidence_refs=['E-test'],
         conflicting_evidence_refs=[], reason='Synthetic review of source and visible history.')
+    marker['unit_assessment']['evidence_observations'] = [dict(
+        tumor_marker_id=marker['tumor_marker_id'], event_day=marker['event_day'],
+        analyte_raw=marker['analyte_raw'], value_raw=marker['value_raw'], unit_raw=marker['unit_raw'],
+        normal_range_lower_raw=None, normal_range_upper_raw=None, evidence_refs=marker['evidence_refs'])]
 markers[0]['normalization'] = dict(status='normalized', value={value}, unit='ng/dL', factor=28.842, reason=None)
 markers[1]['normalization'] = dict(status='unresolved', value=None, unit=None, factor=None, reason='Missing unit')
 markers[2]['unit_assessment'].update(status='inferred_correction', effective_unit='ug/L',

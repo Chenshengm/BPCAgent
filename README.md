@@ -150,7 +150,7 @@ print(result.output["text"] if result.finished else result.info)
 print("Full log:", agent.log_path)
 ```
 
-两个阶段各自使用 `max_tool_iterations` 轮次上限。标准化结果保存为 `tumor_markers_standardized.json`（schema `2.1`），保留原始字段，新增 `unit_assessment` 和 `normalization`。智能体可以根据当前患者的可见证据直接修正单位或补充总／游离睾酮类型，标记为 `inferred_correction` 并应用到标准化结果，无需外部确认。证据仍不足时才保留待核验。可选的 `unit_corrections_path` 用于提供优先采用的已确认资料；模型推断不会冒充 `confirmed_correction`。宿主将改动位置、前后值、理由和证据整理到 `info.unit_changes`，并追加到最终文字报告。
+两个阶段各自使用 `max_tool_iterations` 轮次上限。标准化结果保存为 `tumor_markers_standardized.json`（schema `2.2`），保留原始字段，新增 `unit_assessment` 和 `normalization`。智能体可以根据当前患者的可见证据直接修正单位或补充总／游离睾酮类型，标记为 `inferred_correction` 并应用到标准化结果，无需外部确认。证据仍不足时才保留待核验。可选的 `unit_corrections_path` 用于提供优先采用的已确认资料；模型推断不会冒充 `confirmed_correction`。宿主将改动位置、前后值、理由和证据整理到 `info.unit_changes`，并追加到最终文字报告。每条评估还需提供 `evidence_observations` 原始检验快照，宿主核对记录 ID、项目、日期、数值、单位、参考范围与证据 ID 的对应关系，拒绝将睾酮记录当作 PSA 历史依据；通过校验的来源快照也会附在报告中。
 
 输入目录新增 `unit_inputs.json`，保存固定规则和仅适用于当前患者、截止日、记录的纠错资料。模型必须保存 `standardize_tm.py`，在独立 shell 调用中执行提示词给出的完整命令；宿主程序检查执行成功、脚本内容未变及换算结果。验收失败会反馈模型修复。`result.info["unit_summary"]` 是宿主验收后的分类计数，存在 `unresolved` 不等于执行失败。日志仍为 `log/UnitPatientStateAgent_*.json`，包含规则版本、验收记录和最终状态。协议、纠错资料示例与限制见 [Task 使用文档](doc/tasks.md)。
 
