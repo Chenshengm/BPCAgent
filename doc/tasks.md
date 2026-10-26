@@ -14,10 +14,10 @@ from dotenv import load_dotenv
 from bpcagent import Config, PatientStateTask, PatientStateTaskConfig, SandboxConfig
 
 load_dotenv(".env", override=False)
-root = Path.cwd().parent
+root = Path.cwd()
 task = PatientStateTask(PatientStateTaskConfig(
-    data_dir=root / "Pathway-Agent" / "dataset",
-    rules_path=root / "Pathway-Agent" / "config" / "field_rules.json",
+    data_dir=root.parent / "pathway-agent" / "dataset",  # 本机原有数据；按实际位置修改
+    # rules_path 省略：使用内置 BPC_PatientState 的规则资源
     workspace_root=root / "workspace",
     agent_config=Config(max_tool_iterations=10),
     sandbox_config=SandboxConfig(image="bpcagent-sandbox:0.1"),

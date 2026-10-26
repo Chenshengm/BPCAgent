@@ -2,6 +2,37 @@
 
 一个用于注册工具、创建智能体并执行工具调用的 Python 框架。完整安装、配置与接口说明见 [doc/detail.md](doc/detail.md)。
 
+## 可配置的迭代工作流
+
+新增 `bpcagent.workflow`：PatientStateAgent → TargetSelectionAgent → DrugSelectionAgent
+串行执行，每次 Agent 输出交给 ReviewAgent；被拒绝后携带 reason 重跑当前 Agent，
+通过后才进入下一个阶段。MetaAgent 暂停接入，所有实际运行角色共享截止日绑定的患者状态。
+支持离线 demo、独立 Review 模型配置、结构化输出、有限重试和逐阶段日志。
+Python 入口统一为 `AgentWorkflow`；[test.ipynb](test.ipynb) 的“完整 AgentWorkflow”
+一节可独立运行，目前配置为三个 DeepSeek Flash 任务 Agent + DeepSeek V4 Pro Review。
+科学工具暂为占位，demo 候选列表为空；真实患者提取和完整性检查实际执行。
+
+```bash
+python -m pip install -e .
+python -m bpcagent.workflow.cli --data-dir ../pathway-agent/dataset \
+  --patient-id GENIE-DFCI-051542 --cutoff-day 249 --start-day 159
+```
+
+默认无需 API key。完整架构、真实模型配置、离线评估和指南获取入口见
+[迭代工作流使用说明](doc/workflow.md)。原有患者 Agent 入口保持不变。
+
+患者提取工具 [BPC_PatientState](https://github.com/Chenshengm/BPC_PatientState)
+已直接集成在 `vendor/BPC_PatientState/`，随本项目一并安装。
+源码来源、未提交功能更新和同步方法见 [内置工具说明](vendor/README.md)。
+数据集不随源码打包；示例中的 `../pathway-agent/dataset` 是本机现有数据路径，可自行替换。
+
+配置集中维护在 [config/](config/README.md)：`workflow.jsonc` 管理流程，`providers.jsonc`
+管理 `openai` / `claude` / `deepseek` 官方平台和 `gateway` 路由平台，
+`models.jsonc` 管理模型/推理档位，`agents.jsonc` 给启用的 Agent 分别绑定 LLM；
+`pipeline.jsonc` 管理阶段、阶段提示和重试上限；
+`secrets.local.json` 按服务商密钥名称存放 API key（Git 忽略）。
+在仓库目录运行会自动加载配置，也可以传 `--config /path/to/workflow.jsonc`。
+
 以下示例在 `BPCAgent` 目录运行，要求已安装 `bpcagent` 和示例依赖 `python-dotenv`；真实模型的配置写入 `.env`：`LLM_API_KEY`、`LLM_MODEL_ID`、`LLM_BASE_URL`。模型服务需支持工具调用。
 
 ## 已实现的智能体与工具
@@ -98,7 +129,8 @@ python examples/shell_experiment.py --live
 
 ## 使用患者数据提取智能体
 
-还需在同一 Python 环境安装 `Pathway-Agent` 提供的 `bpc_state` 包，并准备数据集。以下路径按 `code/BPCAgent` 与 `code/Pathway-Agent` 并列设置，每次运行创建独立的工作目录。
+`bpc_state` 由内置的 BPC_PatientState 提供，无需另装工具项目；只需准备数据集。
+以下示例在 BPCAgent 根目录运行，数据路径按本机现有位置设置，每次运行创建独立工作目录。
 
 ```python
 from pathlib import Path
@@ -107,15 +139,13 @@ from dotenv import load_dotenv
 from bpcagent import Config, PatientStateAgent
 
 load_dotenv(".env", override=False)
-root = Path.cwd().parent
-pathway = root / "Pathway-Agent"
+root = Path.cwd()
 work_dir = root / "workspace" / f"run_{uuid4().hex}"
 
 agent = PatientStateAgent(
     patient_id="GENIE-DFCI-051542",
     cutoff_day=220,
-    data_dir=pathway / "dataset",
-    rules_path=pathway / "config" / "field_rules.json",
+    data_dir=root.parent / "pathway-agent" / "dataset",  # 替换为你的数据路径
     work_dir=work_dir,
     config=Config(max_tool_iterations=6),
 )

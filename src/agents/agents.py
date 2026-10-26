@@ -109,6 +109,8 @@ class Agent(ABC):
         # 思考模式的后续工具请求需要回传供应商返回的推理内容。
         if response.reasoning_content is not None:
             message["reasoning_content"] = response.reasoning_content
+        if response.response_items is not None:
+            message["response_items"] = deepcopy(response.response_items)
         if response.tool_calls:
             message["tool_calls"] = [call.to_dict() for call in response.tool_calls]
         messages.append(message)
@@ -162,7 +164,8 @@ class Agent(ABC):
             if not response.tool_calls:
                 self.add_message(Message(input, "user"))
                 self.add_message(Message(response.content, "assistant",
-                                         reasoning_content=response.reasoning_content))
+                                         reasoning_content=response.reasoning_content,
+                                         response_items=deepcopy(response.response_items)))
                 return response.content
             if not tools:
                 raise AgentException("Received tool calls while tools were disabled", code="invalid_response")
