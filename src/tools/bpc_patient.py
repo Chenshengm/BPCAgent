@@ -1,4 +1,4 @@
-"""内置 BPC_PatientState 的 Agent 工具适配；调用方提供患者配置和工作目录。"""
+"""内置 BPCStateExtractor 的 Agent 工具适配；调用方提供患者配置和工作目录。"""
 
 from __future__ import annotations
 

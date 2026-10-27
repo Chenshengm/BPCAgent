@@ -2,8 +2,9 @@
 
 实现位于 `src/workflow/`，导入路径为 `bpcagent.workflow`。基于上游
 `9390414a308c0a07dd4a0bec1556938a8bb9fe44` 的 `BasicAgent`、`ToolRegistry`、
-`Config` 和真实工具调用循环构建；原有 `PatientStateAgent`、
-`UnitPatientStateAgent` 和 `PatientStateTask` 接口保持兼容。
+`Config` 和真实工具调用循环构建。PatientStateAgent 现仅保留 workflow 实现，
+独立版的状态/证据保存功能已合并；旧独立版构造接口已删除。
+UnitPatientStateAgent 和 PatientStateTask 的高级单位纠错接口保持不变。
 
 ## 当前流程
 
@@ -57,8 +58,8 @@ Meta 不执行，源码和配置只保留注释接入点；不要求其 API key�
 
 ## 安装与最小例子
 
-需要 Python 3.10+。BPC_PatientState 提供的 `bpc_state` **0.3.0 / Schema 1.2**
-已内置到 `vendor/BPC_PatientState/`，与 BPCAgent 一次安装；数据集仍单独配置。
+需要 Python 3.10+。BPCStateExtractor 提供的 `bpc_state` **0.3.0 / Schema 1.2**
+已内置到 `vendor/BPCStateExtractor/`，与 BPCAgent 一次安装；数据集仍单独配置。
 提取器尚未作为本项目依赖发布到包索引，需显式安装本地项目：
 
 ```bash
@@ -67,7 +68,7 @@ python -m venv .venv
 .venv/bin/python -m pip install -e .
 
 .venv/bin/python -m bpcagent.workflow.cli \
-  --data-dir ../pathway-agent/dataset \
+  --data-dir ../bpc-patient-state/dataset \
   --patient-id GENIE-DFCI-051542 \
   --start-day 159 --cutoff-day 249 \
   --workspace-root workspace
@@ -88,22 +89,26 @@ Python 入口：
 from bpcagent.workflow import AgentWorkflow
 
 workflow = AgentWorkflow(
-    data_dir="../pathway-agent/dataset", workspace_root="workspace", mode="demo",
+    data_dir="../bpc-patient-state/dataset", workspace_root="workspace", mode="demo",
     top_m=5, top_k=5, max_stage_attempts=2,
 )
 result = workflow.run(patient_id="GENIE-DFCI-051542", cutoff_day=249, start_day=159)
 print(result["finished"], result["task_dir"])
 ```
 
-每次运行创建独立 UUID 目录，保留：
+每次运行按启动日期（北京时间 `Asia/Shanghai`）创建日期目录，再创建独立 UUID 目录；跨午夜运行的 workflow 产物仍保留在启动日期目录中：
 
 ```text
-workspace/run_<uuid>/
+workspace/YYYY-MM-DD/run_<uuid>/
+  logs/
+    console.log                  # 本次运行的 stdout/stderr、开始和结束状态
   request.json
   workflow_plan.json             # 本次运行固定的计划；默认重试预算另存于 request.json
   patient_state.json             # 原始 Schema 1.2，可与离线评估哈希匹配
   shared_patient_state.json      # 原始状态、近期视图、单位转换、完整性检查
   01_PatientStateAgent/
+    patient_state_day_<cutoff>_001.json
+    patient_evidence_day_<cutoff>_002.json # 可分批查询，序号递增
     context.json
     transcript.json             # 包含实际模型响应和工具结果
     output.json
@@ -113,13 +118,30 @@ workspace/run_<uuid>/
   workflow_result.json           # 完成状态、全部阶段反馈、接受的输出
 ```
 
+日期统一使用北京时间（`Asia/Shanghai`），不依赖服务器的系统时区。
+Python、CLI 和 Notebook 均由 `AgentWorkflow.run()` 自动创建同样的目录结构，
+控制台输出保存到本次实验的 `logs/console.log`，返回值 `log_path` 是其绝对路径。
+Notebook 不再单独创建外部日志；每个 Agent 的结构化调用轨迹仍在各阶段的 `transcript.json` 中，
+不重复复制到 logs。跨午夜时，本次实验的日志和产物仍在同一个启动日期目录中。
+
+如果 workflow 抛出未预期异常，日志仍会关闭并保留，记录异常类型（不主动记录可能含密钥的异常正文）；
+可从 `workflow.last_run_dir` 找到本次目录。由于 stdout/stderr 重定向影响整个进程，
+并发实验应使用独立进程，不要在同一个进程的多个线程中并行调用 workflow。
+
+独立 Basic/ReAct Agent 默认在 `workspace/YYYY-MM-DD/run_<uuid>/logs/` 新建 JSON 日志；
+UnitPatientStateAgent 使用调用方指定的 `task_dir/logs/`，
+以便与已有产物放在一起。PatientStateTask 的自定义任务目录命名和时区配置保持不变。
+不再自动写入仓库顶层的 `log/`。旧日志、旧实验目录和 Notebook 已有输出不会自动迁移或删除；
+读取新产物请使用返回的 `task_dir` / `log_path`，不要硬编码旧目录层级。
+
 最终 `finished=true` 只表示编排完成。本版本 `scientific_tools=placeholders`，
 靶点和药物候选为空，宿主也会拒绝模型绕过占位状态提交非空候选。
 候选 Schema 已预留靶点方向、依据、证据引用和适用性未知状态；接入真实检索/
 排序工具后，需要同时扩展宿主的候选验收条件。
 
 结果 schema 为 `2.0`，`turns` 代替旧的 `invocations`：每项含 turn、agent、stage、attempt、
-kind 和 reviews_turn。Review 的 reviews_turn 精确指向其审核的任务 turn。
+kind、reviews_turn 和 artifacts。Review 的 reviews_turn 精确指向其审核的任务 turn。
+PatientState 的 artifacts 包含 state 路径及 evidence 路径列表，均相对本次 task_dir。
 `stages` 保留每次尝试的任务/Review 配对；`accepted_outputs` 仅保留已通过的输出。
 Python 入口统一为 `AgentWorkflow`，不再提供旧名称别名。
 
@@ -137,7 +159,7 @@ Python 入口统一为 `AgentWorkflow`，不再提供旧名称别名。
 export DEEPSEEK_API_KEY='your-key'
 
 .venv/bin/bpc-workflow --mode live \
-  --data-dir ../pathway-agent/dataset \
+  --data-dir ../bpc-patient-state/dataset \
   --patient-id GENIE-DFCI-051542 --cutoff-day 249
 ```
 
@@ -177,11 +199,11 @@ Review 模型和时间隔离规则不应成为优化对象。
 ## 日期范围后的评估数据
 
 未来观察是已发生的真实记录，**不放入任何 Agent 的共享 JSON**。
-从内置 BPC_PatientState 的离线入口另外导出（不暴露给任何 Agent）：
+从内置 BPCStateExtractor 的离线入口另外导出（不暴露给任何 Agent）：
 
 ```bash
 mkdir -p offline_evaluation
-.venv/bin/bpc-state --data-dir ../pathway-agent/dataset evaluation \
+.venv/bin/bpc-state --data-dir ../bpc-patient-state/dataset evaluation \
   --patient-id GENIE-DFCI-051542 --cutoff-day 249 --end-day 339 \
   --output offline_evaluation/GENIE-DFCI-051542-after-249.json
 ```
@@ -217,7 +239,9 @@ mkdir -p offline_evaluation
 `tests/test_workflow.py` 使用合成 CSV 和真实提取器，覆盖正常顺序、共享状态、
 未来记录不影响快照、评估数据隔离、失败通知、Review 阻断/重试、结构化提交、
 占位工具和单位缺失。患者工具已内置，这些集成测试不再因未安装外部项目而跳过。
-PatientStateAgent 还可调用 `get_patient_evidence`，只允许当前快照引用和宿主固定 cutoff。
+PatientStateAgent 必须在本轮保存状态，并调用 `get_patient_evidence` 保存至少一条当前快照证据；
+查询只允许当前快照引用和宿主固定 cutoff。无引用时保存 status=no_evidence_refs 的空证据文件。
+每次 Review 重试都重新检查这些要求，不能用上轮的完成标志跳过提取、证据保存或 state_check。
 工具来源与更新方法见 [内置工具说明](../vendor/README.md)。
 
 后续接入位置：`workflow/agents.py` 的工具注册和候选验收，

@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import patch
 
 from bpcagent.workflow import AgentWorkflow
+from bpcagent.log_paths import create_run_directory
 
 
 class WorkflowNotebookTests(unittest.TestCase):
@@ -24,8 +25,13 @@ class WorkflowNotebookTests(unittest.TestCase):
             configuration.return_value.workflow_options.return_value = {"mode": "live"}
             configuration.return_value.model_configs.return_value = {"agent_configs": {}}
             workflow.return_value.configs = {}
-            workflow.return_value.run.return_value = {
-                "status": "completed", "finished": True, "task_dir": temp, "turns": []}
+            def fake_run(**kwargs):
+                directory = create_run_directory(Path(temp) / "workspace")
+                log = directory / "logs/console.log"
+                log.write_text("synthetic console")
+                return {"status": "completed", "finished": True, "task_dir": str(directory),
+                        "log_path": str(log), "turns": []}
+            workflow.return_value.run.side_effect = fake_run
             for name in ("workflow-config", "workflow-run", "workflow-results"):
                 source = cells[name]
                 ast.parse(source)
@@ -38,6 +44,13 @@ class WorkflowNotebookTests(unittest.TestCase):
                 self.assertEqual(dict(os.environ), before)
             workflow.return_value.run.assert_called_once_with(
                 patient_id="GENIE-DFCI-051542", cutoff_day=50, start_day=None)
+            first_log = namespace["log_path"]
+            self.assertEqual(first_log.parent, Path(namespace["workflow_result"]["task_dir"]) / "logs")
+            self.assertTrue(first_log.is_file())
+            exec(compile(cells["workflow-run"], "test.ipynb:workflow-run", "exec"), namespace)
+            self.assertNotEqual(first_log, namespace["log_path"])
+            self.assertTrue(first_log.is_file())
+            self.assertTrue(namespace["log_path"].is_file())
         self.assertEqual(namespace["turn_summary"], [])
 
     def test_only_new_workflow_name_is_exported(self):

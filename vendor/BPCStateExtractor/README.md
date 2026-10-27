@@ -1,6 +1,6 @@
-# BPC Patient State
+# BPCStateExtractor
 
-`bpc-patient-state` turns the structured GENIE BPC Prostate release into a deterministic, cutoff-safe patient snapshot. It extracts and minimally standardizes documented facts; it does **not** infer missing facts, recommend treatment, or generate training labels.
+[BPCStateExtractor](https://github.com/Chenshengm/BPCStateExtractor) turns the structured GENIE BPC Prostate release into a deterministic, cutoff-safe patient snapshot. It extracts and minimally standardizes documented facts; it does **not** infer missing facts, recommend treatment, or generate training labels. The distribution name remains `bpc-patient-state`, the Python package is `bpc_state`, and the CLI is `bpc-state`; renaming the repository does not change these interfaces.
 
 The central contract is:
 
@@ -33,7 +33,7 @@ The broader research design and planned Agent/Workflow architecture are document
 Python 3.10+ is required.
 
 ```bash
-cd /home/u2021202188/pathway-agent
+cd /home/u2021202188/bpc-patient-state
 python3 -m pip install -e '.[test]'
 ```
 
@@ -47,7 +47,7 @@ from bpc_state import get_patient_state
 state = get_patient_state(
     "GENIE-DFCI-051542",
     cutoff_day=220,
-    data_dir="/home/u2021202188/pathway-agent/dataset",
+    data_dir="/home/u2021202188/bpc-patient-state/dataset",
 )
 ```
 
@@ -56,7 +56,7 @@ For repeated queries, reuse one extractor so local indexes are cached:
 ```python
 from bpc_state import BPCStateExtractor, BoundedPatientTool
 
-extractor = BPCStateExtractor("/home/u2021202188/pathway-agent/dataset")
+extractor = BPCStateExtractor("/home/u2021202188/bpc-patient-state/dataset")
 state = extractor.get_patient_state("GENIE-DFCI-051542", 220)
 
 # The Agent cannot change patient or cross day 220.

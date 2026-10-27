@@ -3,6 +3,7 @@
 from collections import Counter
 from contextlib import redirect_stdout
 from copy import deepcopy
+from datetime import datetime
 import csv
 import io
 import json
@@ -13,6 +14,7 @@ import unittest
 from unittest.mock import patch
 
 from bpcagent import Config, LLMResponse
+from bpcagent.log_paths import LOG_TIMEZONE
 from bpcagent.workflow import AgentWorkflow
 from bpcagent.workflow.agents import TargetSelectionAgent
 from bpcagent.workflow.demo import DemoLLM
@@ -81,6 +83,34 @@ class WorkflowTests(unittest.TestCase):
 
     def workflow(self, **kwargs):
         return AgentWorkflow(data_dir=self.data, workspace_root=self.root / "runs", **kwargs)
+
+    def test_repeated_runs_are_isolated_under_start_date(self):
+        workflow = self.workflow()
+        with patch("bpcagent.log_paths.datetime") as clock:
+            clock.now.return_value = datetime(2026, 10, 27, tzinfo=LOG_TIMEZONE)
+            first = workflow.run(patient_id="P1", cutoff_day=50)
+            second = workflow.run(patient_id="P1", cutoff_day=50)
+        folders = [Path(result["task_dir"]) for result in (first, second)]
+        self.assertNotEqual(*folders)
+        for folder in folders:
+            self.assertEqual(folder.parent, self.root / "runs" / "2026-10-27")
+            self.assertTrue((folder / "workflow_result.json").is_file())
+            self.assertEqual(len(list(folder.glob("*/transcript.json"))), 6)
+            self.assertIn("Workflow finished: completed", (folder / "logs/console.log").read_text())
+            saved = json.loads((folder / "workflow_result.json").read_text())
+            self.assertEqual(Path(saved["log_path"]), folder / "logs/console.log")
+
+    def test_unexpected_failure_preserves_log_and_restores_streams(self):
+        import sys
+        workflow = self.workflow()
+        before = (sys.stdout, sys.stderr)
+        with patch.object(workflow, "_run", side_effect=RuntimeError("private-secret")):
+            with self.assertRaises(RuntimeError):
+                workflow.run(patient_id="P1", cutoff_day=50)
+        self.assertEqual((sys.stdout, sys.stderr), before)
+        log = (workflow.last_run_dir / "logs/console.log").read_text()
+        self.assertIn("Workflow aborted: RuntimeError", log)
+        self.assertNotIn("private-secret", log)
 
     def test_end_to_end_order_shared_snapshot_and_artifacts(self):
         result = self.workflow().run(patient_id="P1", cutoff_day=50, start_day=25)

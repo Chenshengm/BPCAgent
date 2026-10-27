@@ -34,7 +34,7 @@ class BundledPatientStateTests(unittest.TestCase):
         repository = Path(__file__).resolve().parents[1]
         source = Path(bpc_state.__file__).resolve()
         if "site-packages" not in source.parts:
-            self.assertTrue(source.is_relative_to(repository / "vendor" / "BPC_PatientState"), source)
+            self.assertTrue(source.is_relative_to(repository / "vendor" / "BPCStateExtractor"), source)
         self.assertEqual(bpc_state.__version__, "0.3.0")
         rules = json.loads(files("bpc_state.resources").joinpath("field_rules.json").read_text())
         self.assertEqual(RuleSet().config, rules)
@@ -57,7 +57,7 @@ class BundledPatientStateTests(unittest.TestCase):
                                       directory=self.root, config=Config(model="offline"),
                                       llm=DemoLLM("PatientStateAgent"))
         registry = agent.tool_registry
-        state = shared.extract()["patient_state"]
+        state = agent.extract()["patient_state"]
         ref = next(iter(state["evidence_refs"]))
         with redirect_stdout(io.StringIO()):
             result = registry.execute_tool("get_patient_evidence", {"evidence_refs": [ref]})

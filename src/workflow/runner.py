@@ -1,9 +1,10 @@
 """Plan-driven task/review loops. One complete Agent invocation is one turn."""
 
+from contextlib import redirect_stdout, redirect_stderr
 from pathlib import Path
-from uuid import uuid4
 
 from ..agents import Config
+from ..log_paths import create_run_directory
 from .agents import AGENTS
 from .demo import DemoLLM
 from .definition import WorkflowPlan
@@ -54,17 +55,33 @@ class AgentWorkflow:
         return WorkflowPlan.model_validate_json(self._plan_json)
 
     def run(self, *, patient_id, cutoff_day, cancer_id=None, start_day=None):
+        directory = create_run_directory(self.workspace_root).resolve()
+        self.last_run_dir = directory
+        log_path = directory / "logs" / "console.log"
+        # stdout/stderr redirection is process-wide: concurrent experiments must
+        # use separate processes, not threads, to keep console logs isolated.
+        with log_path.open("x", encoding="utf-8") as log, redirect_stdout(log), redirect_stderr(log):
+            print("Workflow started", flush=True)
+            try:
+                result = self._run(directory=directory, patient_id=patient_id, cutoff_day=cutoff_day,
+                                   cancer_id=cancer_id, start_day=start_day)
+            except BaseException as exc:
+                # Do not copy raw exceptions (which may contain credentials).
+                print(f"Workflow aborted: {type(exc).__name__}", flush=True)
+                raise
+            print(f"Workflow finished: {result['status']}", flush=True)
+            return result
+
+    def _run(self, *, directory, patient_id, cutoff_day, cancer_id, start_day):
         plan = self.plan
         shared = SharedPatientState(patient_id=patient_id, cutoff_day=cutoff_day, cancer_id=cancer_id,
                                     data_dir=self.data_dir, rules_path=self.rules_path, start_day=start_day)
-        self.workspace_root.mkdir(parents=True, exist_ok=True)
-        directory = self.workspace_root / f"run_{uuid4().hex}"
-        directory.mkdir()
         result = {
             "schema_version": "2.0", "mode": self.mode, "status": "running", "finished": False,
             "clinical_validation": "not_performed", "scientific_tools": "placeholders",
             "patient_id": patient_id, "cutoff_day": cutoff_day, "start_day": start_day,
             "patient_state_sha256": None, "task_dir": str(directory.resolve()),
+            "log_path": str(directory / "logs" / "console.log"),
             "models": {role: cfg.model for role, cfg in self.configs.items()},
             "llm_settings": {role: {"provider": cfg.default_provider, "model": cfg.model,
                                     "api_mode": cfg.api_mode, "reasoning_effort": cfg.reasoning_effort}
@@ -86,11 +103,12 @@ class AgentWorkflow:
             step_dir = directory / f"{number:02d}_{role}"
             step_dir.mkdir()
             save_json(step_dir / "context.json", context)
-            output, error = None, None
+            output, error, artifacts = None, None, {}
             try:
                 llm = self.llm_factory(role) if self.llm_factory else None
                 agent = AGENTS[role](shared=shared, context=context, directory=step_dir,
                                      config=self.configs[role], llm=llm)
+                artifacts = agent.artifacts
                 run = agent.run("Read shared patient state and stage context, perform your role, then submit_output.")
                 success = run.finished and agent.submitted is not None
                 output = agent.submitted if success else None
@@ -105,6 +123,9 @@ class AgentWorkflow:
                 "status": "completed" if success else "failed",
                 "patient_state_sha256": shared.read()["patient_state_sha256"] if shared.ready else None,
                 "output": output, "error": error,
+                "artifacts": {key: ([str(Path(p).relative_to(directory)) for p in value]
+                                    if isinstance(value, list) else str(Path(value).relative_to(directory)))
+                              for key, value in artifacts.items()},
             }
             save_json(step_dir / "output.json", envelope)
             result["turns"].append(envelope)

@@ -4,7 +4,7 @@
     {
       "agent": "PatientStateAgent", // 本阶段内部提取患者状态、查证据、调用 state_check
       "max_attempts": null, // null 沿用 workflow.jsonc；或正整数（包含首次执行）
-      "instructions": "Extract the bounded patient state and run state_check before submitting."
+      "instructions": "Extract and save the bounded patient state, retrieve and save evidence when references exist, and run state_check before submitting."
     },
     {
       "agent": "TargetSelectionAgent", // 只接收已被 Review 接受的上游输出

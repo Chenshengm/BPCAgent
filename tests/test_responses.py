@@ -3,7 +3,6 @@
 from contextlib import redirect_stdout
 from copy import deepcopy
 import io
-from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
@@ -13,6 +12,7 @@ from openai.types.responses import ResponseFunctionToolCall, ResponseOutputMessa
 
 from bpcagent import BasicAgent, CalculatorTool, Config, LLM, ToolRegistry
 from bpcagent.agents.exceptions import ConfigException, LLMException
+from bpcagent.log_paths import new_log_path
 
 
 def completed(text="done"):
@@ -61,7 +61,8 @@ class ResponsesTests(unittest.TestCase):
         registry = ToolRegistry()
         registry.register_tool(CalculatorTool())
         agent = BasicAgent("responses-test", config=self.cfg, tool_registry=registry)
-        with TemporaryDirectory() as temp, patch("bpcagent.agents.agents.Path", return_value=Path(temp)):
+        with TemporaryDirectory() as temp, patch("bpcagent.agents.agents.new_log_path",
+                                                side_effect=lambda name: new_log_path(name, root=temp)):
             result = agent.run("2+3?")
         self.assertTrue(result.finished)
         self.assertEqual(result.output["text"], "5")

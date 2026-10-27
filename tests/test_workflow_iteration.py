@@ -116,13 +116,14 @@ class WorkflowIterationTests(unittest.TestCase):
     def test_state_check_is_inside_patient_turn_and_required_every_retry(self):
         shared = SharedPatientState(patient_id="P1", cutoff_day=50, data_dir=self.data)
         for attempt in (1, 2):
-            agent = PatientStateAgent(shared=shared, context={"attempt": attempt}, directory=self.root,
+            agent = PatientStateAgent(shared=shared, context={"attempt": attempt}, directory=self.root / f"attempt_{attempt}",
                                       config=Config(), llm=DemoLLM("PatientStateAgent"))
             agent.extract()
             agent.get_context()
             with self.assertRaisesRegex(ValueError, "state_check"):
                 agent.submit({"summary": "done", "limitations": []})
             agent.state_check()
+            agent.get_evidence(list(shared.read()["patient_state"]["evidence_refs"])[:1])
             agent.submit({"summary": "done", "limitations": []})
         review = ReviewAgent(shared=shared, context={}, directory=self.root, config=Config(), llm=DemoLLM("ReviewAgent"))
         self.assertNotIn("state_check", review.tool_registry.list_tools())

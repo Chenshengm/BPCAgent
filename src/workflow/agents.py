@@ -4,6 +4,7 @@ from copy import deepcopy
 
 from ..agents import BasicAgent
 from ..tools import ToolRegistry
+from ..tools.bpc_patient import PatientArtifactStore
 from .models import EmptyArgs, OUTPUT_MODELS, PatientEvidenceArgs, PlaceholderArgs
 from .state import save_json
 
@@ -18,8 +19,9 @@ PLACEHOLDERS = {
 
 PROMPTS = {
     "PatientStateAgent": (
-        "Call get_patient_state (bundled BPC_PatientState), then state_check. "
-        "Use get_patient_evidence to inspect source fields when needed. "
+        "Call get_patient_state (bundled BPCStateExtractor), then state_check. "
+        "After extraction, call get_patient_evidence for at least one snapshot reference when references exist. "
+        "Both tools save their JSON artifacts in this turn's directory. "
         "Describe completeness and unit limitations."
     ),
     "TargetSelectionAgent": (
@@ -70,16 +72,20 @@ class WorkflowAgent(BasicAgent):
         self.read_shared = False
         self.read_context = False
         self.checked = False
+        self.state_saved = False
+        self.evidence_saved = False
+        self.artifacts = {}
+        self.patient_store = PatientArtifactStore(directory) if self.role == "PatientStateAgent" else None
         registry = ToolRegistry()
         registry.register_function("get_shared_patient_state", "Read the immutable common patient snapshot.",
                                    self.get_shared, args_schema=EmptyArgs)
         registry.register_function("get_stage_context", "Read previous stages, current output and review feedback.",
                                    self.get_context, args_schema=EmptyArgs)
         if self.role == "PatientStateAgent":
-            registry.register_function("get_patient_state", "BPC_PatientState: extract the host-bound patient at the fixed cutoff.",
+            registry.register_function("get_patient_state", "BPCStateExtractor: extract the host-bound patient at the fixed cutoff.",
                                        self.extract, args_schema=EmptyArgs)
-            registry.register_function("get_patient_evidence", "BPC_PatientState: resolve snapshot evidence at the fixed cutoff.",
-                                       self.shared.get_evidence, args_schema=PatientEvidenceArgs)
+            registry.register_function("get_patient_evidence", "BPCStateExtractor: resolve snapshot evidence at the fixed cutoff.",
+                                       self.get_evidence, args_schema=PatientEvidenceArgs)
             registry.register_function("state_check", "Check schema, missingness, evidence and units.",
                                        self.state_check, args_schema=EmptyArgs)
         for name in PLACEHOLDERS[self.role]:
@@ -106,8 +112,38 @@ class WorkflowAgent(BasicAgent):
 
     def extract(self):
         payload = self.shared.extract()
+        path = self.patient_store.save("state", self.shared.cutoff_day, payload["patient_state"])
+        self.artifacts["state"] = str(path.resolve())
+        self.state_saved = True
         self.read_shared = True
+        if not payload["patient_state"]["evidence_refs"]:
+            # A valid snapshot may have no evidence. Preserve that fact explicitly
+            # rather than inventing a reference or blocking forever.
+            self._save_evidence([], {}, status="no_evidence_refs")
         return payload
+
+    def _save_evidence(self, evidence_refs, evidence, *, status="retrieved"):
+        state = self.shared.read()["patient_state"]
+        path = self.patient_store.save("evidence", self.shared.cutoff_day, {
+            "patient_id": state["meta"]["patient_id"],
+            "cancer_id": state["meta"]["target_cancer_id"],
+            "cutoff_day": self.shared.cutoff_day,
+            "evidence_refs": evidence_refs, "data": evidence, "status": status,
+        })
+        # Keep all evidence batches discoverable, not just the latest query.
+        self.artifacts.setdefault("evidence", []).append(str(path.resolve()))
+        self.evidence_saved = True
+
+    def get_evidence(self, evidence_refs):
+        if not self.state_saved:
+            raise ValueError("Call get_patient_state in this turn before retrieving evidence")
+        if not evidence_refs:
+            raise ValueError("Select at least one snapshot evidence reference")
+        evidence = self.shared.get_evidence(evidence_refs)
+        if set(evidence_refs) - set(evidence):
+            raise ValueError("Evidence retrieval returned an incomplete result")
+        self._save_evidence(evidence_refs, evidence)
+        return evidence
 
     def get_shared(self):
         result = self.shared.read() if self.shared.ready else {"status": "unavailable", "reason": "extraction_failed_or_not_run"}
@@ -135,8 +171,12 @@ class WorkflowAgent(BasicAgent):
             raise ValueError("Output already submitted")
         if not self.read_shared or not self.read_context:
             raise ValueError("Read shared patient state and stage context before submitting")
+        if self.role == "PatientStateAgent" and not self.state_saved:
+            raise ValueError("get_patient_state must save this turn's patient state")
         if self.role == "PatientStateAgent" and not self.checked:
             raise ValueError("state_check is required")
+        if self.role == "PatientStateAgent" and not self.evidence_saved:
+            raise ValueError("get_patient_evidence must save snapshot evidence before submitting")
         refs = set(self.shared.read()["patient_state"]["evidence_refs"]) if self.shared.ready else set()
         candidates = output.get("candidates", [])
         if self.role in {"TargetSelectionAgent", "DrugSelectionAgent"}:

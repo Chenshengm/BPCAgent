@@ -26,6 +26,13 @@ class DemoLLM:
                 (name, {"request": "Demonstrate the reserved interface; do not fabricate results."})
                 for name in PLACEHOLDERS[self.role] if name != "bash"
             ]
+            if self.role == "PatientStateAgent":
+                results = [json.loads(m["content"]) for m in messages if m["role"] == "tool"]
+                extracted = next((r["data"] for r in results
+                                  if r["tool_name"] == "get_patient_state" and r["status"] == "success"), None)
+                refs = list(extracted["patient_state"]["evidence_refs"]) if extracted else []
+                if refs:
+                    calls.append(("get_patient_evidence", {"evidence_refs": refs[:1]}))
         elif self.tool_step == 3:
             results = [json.loads(m["content"]) for m in messages if m["role"] == "tool"]
             context = next(r["data"] for r in results if r["tool_name"] == "get_stage_context")

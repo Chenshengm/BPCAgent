@@ -1,7 +1,7 @@
 {
   "mode": "demo", // 可选："demo"（离线、不调用 API）| "live"（真实模型）
   "plan_file": "pipeline.jsonc", // 声明式阶段定义；null 使用内置默认流程
-  "data_dir": "../../pathway-agent/dataset", // 数据集路径；相对本文件所在目录
+  "data_dir": "../../bpc-patient-state/dataset", // 数据集路径；相对本文件所在目录
   "workspace_root": "../workspace", // 输出目录；相对本文件所在目录
   "rules_path": null, // null 使用内置规则；也可填自定义规则 JSON 路径
   "models_file": "models.jsonc", // 模型档位配置
